@@ -56,6 +56,9 @@ pnpm --filter web dev
 # Lancer l’API backend
 pnpm --filter api dev
 
+# Lancer la stack locale Docker Compose (services applicatifs et dépendances)
+docker compose --env-file .env up --build
+
 # Appliquer les migrations SQL
 pnpm db:migrate
 
