@@ -6,6 +6,9 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email TEXT NOT NULL UNIQUE,
+    password_hash TEXT,
+    mfa_enabled BOOLEAN NOT NULL DEFAULT false,
+    passkey_enabled BOOLEAN NOT NULL DEFAULT false,
     display_name TEXT,
     locale TEXT NOT NULL DEFAULT 'fr-FR',
     timezone TEXT NOT NULL DEFAULT 'Europe/Paris',
