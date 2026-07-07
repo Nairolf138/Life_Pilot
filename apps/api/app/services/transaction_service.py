@@ -107,7 +107,7 @@ class TransactionService:
                 f"""
                 SELECT {TRANSACTION_COLUMNS}
                 FROM transactions
-                WHERE {' AND '.join(conditions)}
+                WHERE {" AND ".join(conditions)}
                 ORDER BY booking_date DESC, created_at DESC
                 """
             ),

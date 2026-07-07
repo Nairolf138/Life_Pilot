@@ -7,7 +7,14 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 
 from app.schemas.transaction import (
     TransactionCategoryPatch,
@@ -17,6 +24,7 @@ from app.schemas.transaction import (
     TransactionResponse,
 )
 from app.services.auth_service import AuthenticatedUser, get_current_user
+from app.services.importers.csv_bank_importer import CsvBankImporter, config_from_json
 from app.services.transaction_service import TransactionService, get_transaction_service
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -97,16 +105,74 @@ async def get_transaction(
     status_code=status.HTTP_201_CREATED,
 )
 async def import_transactions(
-    payload: TransactionImportRequest,
+    request: Request,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     transaction_service: Annotated[
         TransactionService,
         Depends(get_transaction_service),
     ],
 ) -> TransactionImportResponse:
-    """Importe un lot de transactions avec déduplication applicative."""
+    """Importe des transactions depuis JSON, upload CSV ou chemin CSV serveur."""
 
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        payload = await _csv_import_payload_from_form(request)
+    else:
+        payload = TransactionImportRequest.model_validate(await request.json())
     return await transaction_service.import_transactions(current_user.id, payload)
+
+
+async def _csv_import_payload_from_form(request: Request) -> TransactionImportRequest:
+    """Construit un payload d'import depuis un formulaire multipart CSV."""
+
+    form = await request.form()
+    account_id = form.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Le champ form-data account_id est requis pour un import CSV.",
+        )
+    mapping_json = form.get("mapping")
+    config_json = mapping_json if isinstance(mapping_json, str) else None
+    try:
+        config = config_from_json(config_json, account_id=UUID(account_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    importer = CsvBankImporter(config)
+
+    uploaded_file = form.get("file")
+    file_path = form.get("file_path")
+    if uploaded_file is not None and hasattr(uploaded_file, "file"):
+        try:
+            result = importer.parse_upload(
+                uploaded_file.file,
+                filename=getattr(uploaded_file, "filename", None),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+    elif isinstance(file_path, str) and file_path.strip():
+        try:
+            result = importer.parse_path(file_path)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Fournir un fichier CSV uploadé (file) "
+                "ou un chemin serveur (file_path)."
+            ),
+        )
+    return result.request
 
 
 @router.patch("/{id}/category", response_model=TransactionResponse)
