@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     )
     secret_key: str = Field(default="change-me", validation_alias="SECRET_KEY")
     access_token_expire_minutes: int = 60
+    refresh_token_expire_minutes: int = 60 * 24 * 14
     cors_origins: list[str] = Field(default_factory=list)
 
 
