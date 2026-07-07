@@ -173,8 +173,15 @@ CREATE TABLE reminders (
 CREATE TABLE audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    actor TEXT NOT NULL,
-    action TEXT NOT NULL,
+    actor TEXT NOT NULL CHECK (actor IN ('user', 'system', 'worker', 'n8n')),
+    action TEXT NOT NULL CHECK (action IN (
+        'creation',
+        'modification',
+        'logical_deletion',
+        'import',
+        'categorization',
+        'matching'
+    )),
     entity_type TEXT NOT NULL,
     entity_id UUID,
     before_json JSONB,
@@ -193,3 +200,6 @@ CREATE INDEX idx_documents_file_hash ON documents(file_hash);
 CREATE INDEX idx_emails_external_message_id_hash ON emails(external_message_id_hash);
 CREATE INDEX idx_connections_provider ON connections(provider);
 CREATE INDEX idx_reminders_due_date ON reminders(due_date);
+CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
