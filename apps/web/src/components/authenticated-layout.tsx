@@ -1,7 +1,8 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 const navigation = [
-  { href: "/dashboard", label: "Tableau de bord" },
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/accounts", label: "Comptes" },
   { href: "/transactions", label: "Transactions" },
   { href: "/documents", label: "Documents" },
@@ -9,25 +10,42 @@ const navigation = [
   { href: "/settings", label: "Paramètres" },
 ];
 
-export function AuthenticatedLayout({ children }: Readonly<{ children: import("react").ReactNode }>) {
+function MainNavigation({ compact = false }: Readonly<{ compact?: boolean }>) {
+  return (
+    <nav className={compact ? "nav-links nav-links--compact" : "nav-links"} aria-label="Navigation principale">
+      {navigation.map((item) => (
+        <Link key={item.href} href={item.href}>{item.label}</Link>
+      ))}
+    </nav>
+  );
+}
+
+export function AuthenticatedLayout({ children }: Readonly<{ children: ReactNode }>) {
+  const userName = "Camille Martin";
+
   return (
     <div className="app-shell">
-      <aside className="sidebar" aria-label="Navigation principale">
+      <aside className="sidebar">
         <Link className="brand" href="/dashboard">Life Pilot</Link>
-        <nav className="nav-links">
-          {navigation.map((item) => (
-            <Link key={item.href} href={item.href}>{item.label}</Link>
-          ))}
-        </nav>
+        <MainNavigation />
       </aside>
+
       <div className="main-panel">
         <header className="topbar">
           <div>
             <p className="eyebrow">Espace authentifié</p>
-            <h1>Console Life Pilot</h1>
+            <h1>Bonjour, {userName}</h1>
           </div>
-          <Link className="logout-link" href="/login">Déconnexion</Link>
+          <div className="topbar__actions">
+            <span className="user-pill" aria-label={`Utilisateur connecté : ${userName}`}>{userName}</span>
+            <Link className="logout-link" href="/login">Déconnexion</Link>
+          </div>
         </header>
+
+        <div className="mobile-nav" aria-label="Navigation mobile">
+          <MainNavigation compact />
+        </div>
+
         <main className="content">{children}</main>
       </div>
     </div>
