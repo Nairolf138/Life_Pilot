@@ -10,6 +10,7 @@ from app.api.routes import (
     assistant,
     auth,
     contracts,
+    dashboard,
     documents,
     health,
     reminders,
@@ -24,6 +25,7 @@ api_router.include_router(accounts.router)
 api_router.include_router(transactions.router)
 api_router.include_router(documents.router)
 api_router.include_router(contracts.router)
+api_router.include_router(dashboard.router)
 api_router.include_router(vehicles.router)
 api_router.include_router(assets.router)
 api_router.include_router(reminders.router)
