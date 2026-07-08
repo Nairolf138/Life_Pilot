@@ -24,6 +24,8 @@
 .stats-grid { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .stats-grid--dashboard { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .dashboard-panels { display: grid; gap: 24px; grid-template-columns: minmax(0, 1.5fr) minmax(280px, .9fr); }
+.dashboard-panels--attention { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.muted-text { color: var(--muted); line-height: 1.6; margin: 0; }
 .page-card, .stat-card, .alert, .empty-state, .loading-state { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 16px 40px rgba(16,24,40,.06); }
 .page-card { padding: 28px; }
 .page-card h3 { margin: 0 0 16px; }
