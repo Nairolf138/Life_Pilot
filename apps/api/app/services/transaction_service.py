@@ -176,12 +176,35 @@ class TransactionService:
 
         await self._ensure_category_belongs_to_user(user_id, payload.category_id)
         await self._ensure_category_belongs_to_user(user_id, payload.subcategory_id)
+        transaction = await self._fetch_transaction(user_id, transaction_id)
+        if transaction is None:
+            raise_transaction_not_found()
+
+        notes = (
+            payload.notes if "notes" in payload.model_fields_set else transaction.notes
+        )
+
+        if payload.learning_scope != "transaction_only":
+            await self._create_categorization_rule_from_transaction(
+                user_id=user_id,
+                transaction=transaction,
+                payload=payload,
+            )
+
+        if payload.learning_scope == "past_and_future_similar":
+            await self._apply_category_to_similar_past_transactions(
+                user_id=user_id,
+                transaction=transaction,
+                payload=payload,
+            )
+
         result = await self._session.execute(
             text(
                 f"""
                 UPDATE transactions
                 SET category_id = :category_id,
                     subcategory_id = :subcategory_id,
+                    notes = :notes,
                     confidence_score = :confidence_score,
                     updated_at = now()
                 WHERE id = :transaction_id
@@ -194,6 +217,7 @@ class TransactionService:
                 "user_id": user_id,
                 "category_id": payload.category_id,
                 "subcategory_id": payload.subcategory_id,
+                "notes": notes,
                 "confidence_score": payload.confidence_score,
             },
         )
@@ -250,6 +274,77 @@ class TransactionService:
         )
         await self._session.commit()
         return _transaction_from_row(row)
+
+    async def _create_categorization_rule_from_transaction(
+        self,
+        *,
+        user_id: UUID,
+        transaction,
+        payload: TransactionCategoryPatch,
+    ) -> None:
+        match_type, pattern = _similarity_rule(transaction)
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO categorization_rules (
+                    user_id, name, priority, match_type, pattern, category_id,
+                    subcategory_id, confidence_score, is_active
+                ) VALUES (
+                    :user_id, :name, 5, :match_type, :pattern, :category_id,
+                    :subcategory_id, :confidence_score, true
+                )
+                """
+            ),
+            {
+                "user_id": user_id,
+                "name": f"Apprentissage: {pattern[:80]}",
+                "match_type": match_type,
+                "pattern": pattern,
+                "category_id": payload.category_id,
+                "subcategory_id": payload.subcategory_id,
+                "confidence_score": payload.confidence_score,
+            },
+        )
+
+    async def _apply_category_to_similar_past_transactions(
+        self,
+        *,
+        user_id: UUID,
+        transaction,
+        payload: TransactionCategoryPatch,
+    ) -> None:
+        match_type, pattern = _similarity_rule(transaction)
+        if match_type == "merchant_exact":
+            similarity_condition = "lower(trim(merchant_name)) = lower(trim(:pattern))"
+        else:
+            similarity_condition = (
+                "lower(coalesce(label_clean, label_raw)) LIKE :pattern_like"
+            )
+        await self._session.execute(
+            text(
+                f"""
+                UPDATE transactions
+                SET category_id = :category_id,
+                    subcategory_id = :subcategory_id,
+                    confidence_score = :confidence_score,
+                    updated_at = now()
+                WHERE user_id = :user_id
+                  AND booking_date <= :booking_date
+                  AND id != :transaction_id
+                  AND {similarity_condition}
+                """
+            ),
+            {
+                "user_id": user_id,
+                "transaction_id": transaction.id,
+                "booking_date": transaction.booking_date,
+                "pattern": pattern,
+                "pattern_like": f"%{pattern.lower()}%",
+                "category_id": payload.category_id,
+                "subcategory_id": payload.subcategory_id,
+                "confidence_score": payload.confidence_score,
+            },
+        )
 
     async def _fetch_transaction(self, user_id: UUID, transaction_id: UUID):
         result = await self._session.execute(
@@ -453,3 +548,12 @@ def _transaction_from_row(row) -> TransactionRecord:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _similarity_rule(transaction) -> tuple[str, str]:
+    merchant_name = (transaction.merchant_name or "").strip()
+    if merchant_name:
+        return "merchant_exact", merchant_name
+    label = transaction.label_clean or transaction.label_raw
+    pattern = " ".join(label.strip().split())
+    return "contains", pattern

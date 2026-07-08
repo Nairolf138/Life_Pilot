@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -100,6 +101,7 @@ class TransactionCategoryPatch(BaseModel):
 
     category_id: UUID | None = None
     subcategory_id: UUID | None = None
+    notes: str | None = Field(default=None, max_length=2000)
     confidence_score: Decimal | None = Field(
         default=Decimal("1"),
         ge=Decimal("0"),
@@ -107,6 +109,11 @@ class TransactionCategoryPatch(BaseModel):
         max_digits=5,
         decimal_places=4,
     )
+    learning_scope: Literal[
+        "transaction_only",
+        "future_similar",
+        "past_and_future_similar",
+    ] = "transaction_only"
 
 
 class TransactionDocumentLink(BaseModel):

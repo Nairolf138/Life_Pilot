@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 type StatusBadgeVariant = "success" | "warning" | "danger" | "neutral" | "info";
 
@@ -58,12 +58,16 @@ export function StatusBadge({ children, variant = "neutral" }: Readonly<{ childr
   return <span className={`status-badge status-badge--${variant}`}>{children}</span>;
 }
 
-export function ActionButton({ children, href }: Readonly<{ children: ReactNode; href?: string }>) {
+type ActionButtonProps = Readonly<
+  { children: ReactNode; href?: string } & ButtonHTMLAttributes<HTMLButtonElement>
+>;
+
+export function ActionButton({ children, href, type = "button", ...buttonProps }: ActionButtonProps) {
   if (href) {
     return <a className="action-button" href={href}>{children}</a>;
   }
 
-  return <button className="action-button" type="button">{children}</button>;
+  return <button className="action-button" type={type} {...buttonProps}>{children}</button>;
 }
 
 export function Alert({ children, title, variant = "info" }: Readonly<{ children: ReactNode; title: string; variant?: "info" | "warning" | "success" }>) {
