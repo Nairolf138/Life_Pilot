@@ -28,6 +28,35 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_minutes: int = 60 * 24 * 14
     cors_origins: list[str] = Field(default_factory=list)
+    storage_backend: str = Field(default="local", validation_alias="STORAGE_BACKEND")
+    storage_local_root: str = Field(
+        default="/tmp/lifepilot-documents",
+        validation_alias="STORAGE_LOCAL_ROOT",
+    )
+    storage_s3_endpoint_url: str | None = Field(
+        default=None,
+        validation_alias="STORAGE_S3_ENDPOINT_URL",
+    )
+    storage_s3_bucket: str = Field(
+        default="lifepilot-documents",
+        validation_alias="STORAGE_S3_BUCKET",
+    )
+    storage_s3_access_key: str | None = Field(
+        default=None,
+        validation_alias="STORAGE_S3_ACCESS_KEY",
+    )
+    storage_s3_secret_key: str | None = Field(
+        default=None,
+        validation_alias="STORAGE_S3_SECRET_KEY",
+    )
+    storage_s3_region: str = Field(
+        default="us-east-1",
+        validation_alias="STORAGE_S3_REGION",
+    )
+    storage_s3_use_ssl: bool = Field(
+        default=True,
+        validation_alias="STORAGE_S3_USE_SSL",
+    )
 
 
 @lru_cache

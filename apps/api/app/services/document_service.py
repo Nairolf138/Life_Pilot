@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from hashlib import sha256
-from pathlib import Path
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, UploadFile, status
 from sqlalchemy import text
@@ -21,8 +19,11 @@ from app.schemas.document import (
     DocumentUpdate,
     DocumentUploadResponse,
 )
-
-DOCUMENT_STORAGE_ROOT = Path("/tmp/lifepilot-documents")
+from app.services.storage_service import (
+    DownloadedFile,
+    StorageService,
+    get_storage_service,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +55,9 @@ class DocumentRecord:
 class DocumentService:
     """Orchestre les opérations de lecture et d'écriture des documents."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, storage_service: StorageService) -> None:
         self._session = session
+        self._storage_service = storage_service
 
     async def list_documents(self, user_id: UUID) -> list[DocumentRecord]:
         """Liste les documents de l'utilisateur courant."""
@@ -92,18 +94,20 @@ class DocumentService:
         """Stocke un fichier et crée le document, en évitant les doublons par hash."""
 
         content = await file.read()
-        file_hash = sha256(content).hexdigest()
+        file_hash = self._storage_service.calculate_file_hash(content)
         existing = await self._fetch_document_by_hash(user_id, file_hash)
         if existing is not None:
             return DocumentUploadResponse(
                 document=_document_from_row(existing), duplicate=True
             )
 
-        storage_dir = DOCUMENT_STORAGE_ROOT / str(user_id)
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = Path(file.filename or "document").name
-        file_path = storage_dir / f"{uuid4()}-{safe_name}"
-        file_path.write_bytes(content)
+        stored_file = self._storage_service.upload_document_bytes(
+            user_id=user_id,
+            document_type=document_type,
+            filename=file.filename,
+            content=content,
+            mime_type=file.content_type,
+        )
 
         result = await self._session.execute(
             text(
@@ -121,15 +125,31 @@ class DocumentService:
             {
                 "user_id": user_id,
                 "document_type": document_type,
-                "title": title or safe_name,
-                "file_path": str(file_path),
-                "file_hash": file_hash,
-                "mime_type": file.content_type,
+                "title": title or (file.filename or "document"),
+                "file_path": stored_file.file_path,
+                "file_hash": stored_file.file_hash,
+                "mime_type": stored_file.mime_type,
             },
         )
         await self._session.commit()
         return DocumentUploadResponse(
             document=_document_from_row(result.mappings().one()), duplicate=False
+        )
+
+    async def download_document(
+        self,
+        user_id: UUID,
+        document_id: UUID,
+    ) -> DownloadedFile:
+        """Retourne le contenu après contrôle d'appartenance utilisateur."""
+
+        document = await self.get_document(user_id, document_id)
+        return self._storage_service.download_document_file(
+            user_id=user_id,
+            document_type=document.document_type,
+            file_path=document.file_path,
+            file_hash=document.file_hash,
+            mime_type=document.mime_type,
         )
 
     async def extract_document(
@@ -281,10 +301,11 @@ DOCUMENT_COLUMNS = """
 
 async def get_document_service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    storage_service: Annotated[StorageService, Depends(get_storage_service)],
 ) -> DocumentService:
     """Construit le service de documents pour FastAPI."""
 
-    return DocumentService(session)
+    return DocumentService(session, storage_service)
 
 
 def raise_document_not_found() -> None:
