@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, Response, UploadFile, status
 
 from app.schemas.document import (
     DocumentExtractRequest,
@@ -39,6 +39,25 @@ async def get_document(
     """Retourne le détail d'un document de l'utilisateur authentifié."""
 
     return await document_service.get_document(current_user.id, id)
+
+
+@router.get("/{id}/download")
+async def download_document(
+    id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    document_service: Annotated[DocumentService, Depends(get_document_service)],
+) -> Response:
+    """Télécharge un document privé après authentification et contrôle d'accès."""
+
+    downloaded_file = await document_service.download_document(current_user.id, id)
+    return Response(
+        content=downloaded_file.content,
+        media_type=downloaded_file.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{id}"',
+            "Content-Length": str(downloaded_file.file_size),
+        },
+    )
 
 
 @router.post(

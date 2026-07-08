@@ -16,3 +16,10 @@
 ## Amélioration prévue
 
 - L’activation d’une authentification forte par MFA et/ou passkey est prévue comme amélioration de sécurité future.
+
+## Stockage des documents
+
+- Les fichiers de documents utilisateurs sont stockés dans un espace privé et référencés en base via `documents.file_path`, `documents.file_hash` et `documents.mime_type`.
+- Les chemins de stockage sont des chemins logiques internes, organisés par utilisateur et type de document ; ils ne doivent pas être exposés comme URL publique directe.
+- Les fichiers ne doivent jamais être servis publiquement sans contrôle d’accès préalable : toute lecture doit vérifier l’utilisateur authentifié, l’appartenance du document et l’intégrité du fichier.
+- Pour MinIO/S3, le bucket doit rester privé. Les liens pré-signés éventuels doivent être de courte durée et générés uniquement après autorisation métier.
