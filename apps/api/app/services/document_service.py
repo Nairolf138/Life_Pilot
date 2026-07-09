@@ -19,6 +19,7 @@ from app.schemas.document import (
     DocumentUpdate,
     DocumentUploadResponse,
 )
+from app.services.document_extraction_service import DocumentExtractionService
 from app.services.storage_service import (
     DownloadedFile,
     StorageService,
@@ -158,12 +159,37 @@ class DocumentService:
         document_id: UUID,
         payload: DocumentExtractRequest,
     ) -> DocumentRecord:
-        """Enregistre le résultat d'extraction d'un document."""
+        """Enregistre ou lance l'extraction texte native d'un document PDF."""
 
         changes = payload.model_dump(exclude_unset=True)
-        if not changes:
-            changes = {"extraction_status": "completed"}
-        return await self._update_document_fields(user_id, document_id, changes)
+        if changes:
+            return await self._update_document_fields(user_id, document_id, changes)
+
+        document = await self.get_document(user_id, document_id)
+        downloaded_file = self._storage_service.download_document_file(
+            user_id=user_id,
+            document_type=document.document_type,
+            file_path=document.file_path,
+            file_hash=document.file_hash,
+            mime_type=document.mime_type,
+        )
+        extraction = DocumentExtractionService().extract_pdf(downloaded_file.content)
+        extraction_changes = {
+            "extracted_text": extraction.extracted_text,
+            "extraction_status": extraction.extraction_status,
+            "confidence_score": extraction.confidence_score,
+        }
+        if extraction.issuer is not None:
+            extraction_changes["issuer"] = extraction.issuer
+        if extraction.issue_date is not None:
+            extraction_changes["issue_date"] = extraction.issue_date
+        if extraction.amount is not None:
+            extraction_changes["amount"] = extraction.amount
+        if extraction.currency is not None:
+            extraction_changes["currency"] = extraction.currency
+        return await self._update_document_fields(
+            user_id, document_id, extraction_changes
+        )
 
     async def link_transaction(
         self,

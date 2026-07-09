@@ -47,7 +47,7 @@ class DocumentExtractRequest(BaseModel):
     """Données d'extraction optionnelles fournies par un worker OCR futur."""
 
     extracted_text: str | None = None
-    extraction_status: str = Field(default="completed", max_length=80)
+    extraction_status: str = Field(default="pending", max_length=80)
     issuer: str | None = Field(default=None, max_length=255)
     issue_date: date | None = None
     due_date: date | None = None
