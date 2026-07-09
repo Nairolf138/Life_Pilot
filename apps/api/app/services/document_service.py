@@ -173,7 +173,11 @@ class DocumentService:
             file_hash=document.file_hash,
             mime_type=document.mime_type,
         )
-        extraction = DocumentExtractionService().extract_pdf(downloaded_file.content)
+        extraction = DocumentExtractionService().extract_document(
+            downloaded_file.content,
+            mime_type=downloaded_file.mime_type,
+            filename=downloaded_file.file_path,
+        )
         extraction_changes = {
             "extracted_text": extraction.extracted_text,
             "extraction_status": extraction.extraction_status,

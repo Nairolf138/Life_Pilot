@@ -8,6 +8,8 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
+from app.services.ocr import OCR_STATUS_PROCESSED, OcrProvider
+
 EXTRACTION_STATUS_PENDING = "pending"
 EXTRACTION_STATUS_TEXT_EXTRACTED = "text_extracted"
 EXTRACTION_STATUS_OCR_REQUIRED = "ocr_required"
@@ -31,7 +33,46 @@ class DocumentExtractionResult:
 
 
 class DocumentExtractionService:
-    """Extrait le texte natif d'un PDF et quelques champs métier simples."""
+    """Extrait le texte d'un PDF ou d'une image et quelques champs métier simples."""
+
+    def __init__(self, ocr_provider: OcrProvider | None = None) -> None:
+        self._ocr_provider = ocr_provider
+
+    def extract_document(
+        self,
+        content: bytes,
+        *,
+        mime_type: str | None,
+        filename: str | None = None,
+    ) -> DocumentExtractionResult:
+        """Extrait un document PDF ou image, avec bascule OCR si nécessaire."""
+
+        if is_image_mime_type(mime_type):
+            return self._extract_with_ocr(
+                content,
+                mime_type=mime_type,
+                filename=filename,
+                fallback_status=EXTRACTION_STATUS_OCR_REQUIRED,
+            )
+        if is_pdf_mime_type(mime_type) or looks_like_pdf(content):
+            native_extraction = self.extract_pdf(content)
+            if native_extraction.extraction_status != EXTRACTION_STATUS_OCR_REQUIRED:
+                return native_extraction
+            ocr_extraction = self._extract_with_ocr(
+                content,
+                mime_type=mime_type,
+                filename=filename,
+                fallback_status=EXTRACTION_STATUS_OCR_REQUIRED,
+            )
+            if ocr_extraction.extraction_status == EXTRACTION_STATUS_OCR_PROCESSED:
+                return ocr_extraction
+            return native_extraction
+        return self._extract_with_ocr(
+            content,
+            mime_type=mime_type,
+            filename=filename,
+            fallback_status=EXTRACTION_STATUS_FAILED,
+        )
 
     def extract_pdf(self, content: bytes) -> DocumentExtractionResult:
         """Extrait le texte natif d'un PDF, sans OCR."""
@@ -62,6 +103,56 @@ class DocumentExtractionService:
             extracted_text=extracted_text,
             extraction_status=EXTRACTION_STATUS_TEXT_EXTRACTED,
             confidence_score=confidence_score,
+            issuer=metadata.issuer,
+            issue_date=metadata.issue_date,
+            amount=metadata.amount,
+            currency=metadata.currency,
+        )
+
+    def _extract_with_ocr(
+        self,
+        content: bytes,
+        *,
+        mime_type: str | None,
+        filename: str | None,
+        fallback_status: str,
+    ) -> DocumentExtractionResult:
+        if self._ocr_provider is None:
+            return DocumentExtractionResult(
+                extracted_text=None,
+                extraction_status=fallback_status,
+                confidence_score=Decimal("0"),
+            )
+
+        try:
+            ocr_result = self._ocr_provider.extract_text(
+                content=content,
+                mime_type=mime_type,
+                filename=filename,
+            )
+        except Exception:
+            return DocumentExtractionResult(
+                extracted_text=None,
+                extraction_status=EXTRACTION_STATUS_FAILED,
+                confidence_score=Decimal("0"),
+            )
+
+        extracted_text = normalize_extracted_text(ocr_result.text or "")
+        if (
+            ocr_result.status != OCR_STATUS_PROCESSED
+            or not is_usable_text(extracted_text)
+        ):
+            return DocumentExtractionResult(
+                extracted_text=extracted_text or None,
+                extraction_status=fallback_status,
+                confidence_score=ocr_result.confidence_score or Decimal("0"),
+            )
+
+        metadata = extract_business_fields(extracted_text)
+        return DocumentExtractionResult(
+            extracted_text=extracted_text,
+            extraction_status=EXTRACTION_STATUS_OCR_PROCESSED,
+            confidence_score=normalize_confidence_score(ocr_result.confidence_score),
             issuer=metadata.issuer,
             issue_date=metadata.issue_date,
             amount=metadata.amount,
@@ -114,6 +205,24 @@ def is_usable_text(text: str | None) -> bool:
         return False
     alphanumeric_count = sum(character.isalnum() for character in text)
     return alphanumeric_count >= USABLE_TEXT_MIN_LENGTH
+
+
+def is_pdf_mime_type(mime_type: str | None) -> bool:
+    """Indique si le type MIME correspond à un PDF."""
+
+    return (mime_type or "").lower() == "application/pdf"
+
+
+def is_image_mime_type(mime_type: str | None) -> bool:
+    """Indique si le type MIME correspond à une image prise en charge par OCR."""
+
+    return (mime_type or "").lower().startswith("image/")
+
+
+def looks_like_pdf(content: bytes) -> bool:
+    """Détecte rapidement un PDF lorsque le type MIME est absent."""
+
+    return content.startswith(b"%PDF")
 
 
 def extract_business_fields(text: str) -> ExtractedBusinessFields:
@@ -214,3 +323,11 @@ def score_text_extraction(text: str, metadata: ExtractedBusinessFields) -> Decim
     if metadata.amount:
         score += Decimal("0.10")
     return min(score, Decimal("0.95")).quantize(Decimal("0.0001"))
+
+
+def normalize_confidence_score(score: Decimal | None) -> Decimal:
+    """Normalise la confiance OCR dans l'intervalle stockable en base."""
+
+    if score is None:
+        return Decimal("0")
+    return min(max(score, Decimal("0")), Decimal("1")).quantize(Decimal("0.0001"))
