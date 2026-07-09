@@ -139,3 +139,25 @@ Les connecteurs externes doivent :
 - éviter que le reste du backend dépende directement d’un fournisseur spécifique.
 
 Cette isolation permettra de remplacer ou compléter un fournisseur sans réécrire la logique métier.
+
+## OCR configurable
+
+Le pipeline documentaire s'appuie sur une interface `OcrProvider` pour isoler le
+fournisseur OCR du reste du backend. L'API peut donc recevoir un PDF ou une image,
+extraire d'abord le texte natif lorsque le PDF en contient, puis déléguer à l'OCR
+si le texte est absent ou insuffisant.
+
+Les résultats OCR doivent produire :
+
+- un texte normalisé destiné à alimenter `documents.extracted_text` ;
+- un score ou statut de confiance stockable avec le document ;
+- le statut persistant `extraction_status = ocr_processed` lorsque l'OCR a
+  effectivement produit un texte exploitable.
+
+L'OCR peut être désactivé selon l'environnement, par exemple en développement,
+en test ou dans une installation sans dépendances système. Dans ce cas, le
+pipeline conserve un statut indiquant qu'un OCR reste requis au lieu de bloquer
+la création du document. L'implémentation locale prévue est basée sur Tesseract,
+mais le contrat `OcrProvider` permet de la remplacer par un service managé, un
+worker spécialisé ou un mock de test sans modifier les routes HTTP ni le modèle
+de données.
