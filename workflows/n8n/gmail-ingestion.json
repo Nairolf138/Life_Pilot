@@ -1,0 +1,281 @@
+{
+  "name": "Life Pilot - Gmail PDF ingestion",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "0b5b2d9f-8f8f-4d0a-9d54-bd0f3b2f9424",
+      "name": "Toutes les 4 heures",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": true,
+        "filters": {
+          "q": "newer_than:7d has:attachment filename:pdf (facture OR invoice OR reçu OR receipt OR contrat OR échéance)"
+        }
+      },
+      "id": "ccf69c52-c58c-4a9b-a2d8-0dc99d27402b",
+      "name": "Rechercher nouveaux emails pertinents",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "__GMAIL_CREDENTIAL_ID__",
+          "name": "Gmail Life Pilot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const subject = ($json.subject || '').toLowerCase();\nconst from = ($json.from || $json.sender || '').toLowerCase();\nlet documentType = 'email_pdf';\nif (subject.includes('facture') || subject.includes('invoice') || from.includes('billing') || from.includes('compta')) documentType = 'invoice';\nif (subject.includes('reçu') || subject.includes('receipt')) documentType = 'receipt';\nif (subject.includes('contrat') || subject.includes('contract')) documentType = 'contract';\nif (subject.includes('échéance') || subject.includes('avis')) documentType = 'notice';\nconst attachments = $json.attachments || [];\nconst pdfAttachments = attachments.filter((attachment) => (attachment.filename || '').toLowerCase().endsWith('.pdf') || attachment.mimeType === 'application/pdf');\nif (!pdfAttachments.length) {\n  return [{ json: { ...$json, lifepilot: { documentType, title: $json.subject || 'Document Gmail', sender: from, hasPdfAttachment: false } } }];\n}\nreturn pdfAttachments.map((attachment) => ({ json: { ...$json, lifepilot: { documentType, title: $json.subject || attachment.filename || 'Document Gmail', sender: from, hasPdfAttachment: true, attachmentId: attachment.id, attachmentName: attachment.filename } } }));"
+      },
+      "id": "34cbb531-b3d5-4111-a673-4d044eddb2a7",
+      "name": "Classifier sujet et expéditeur",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.lifepilot.hasPdfAttachment }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "95fd00ad-c8c7-4722-8d6c-47cb5a5c43f7",
+      "name": "PDF détecté ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "messageAttachment",
+        "operation": "download",
+        "messageId": "={{ $json.id }}",
+        "attachmentId": "={{ $json.lifepilot.attachmentId }}",
+        "binaryPropertyName": "document"
+      },
+      "id": "740e291f-43cc-4d36-a8b6-149199b0e0aa",
+      "name": "Télécharger les PDF",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        -80
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "__GMAIL_CREDENTIAL_ID__",
+          "name": "Gmail Life Pilot"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/documents' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "document"
+            },
+            {
+              "name": "user_id",
+              "value": "={{ $env.LIFEPILOT_USER_ID }}"
+            },
+            {
+              "name": "document_type",
+              "value": "={{ $json.lifepilot.documentType }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $json.lifepilot.title }}"
+            }
+          ]
+        }
+      },
+      "id": "a214006f-186b-4245-9d0d-00a4b1f5cc83",
+      "name": "Envoyer au backend et déclencher extraction texte",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        -80
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ Boolean($json.error) }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "1a908e09-cdc4-45f2-bd0d-1ed166af2883",
+      "name": "Erreur ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error(JSON.stringify({ workflow: 'Life Pilot - Gmail PDF ingestion', step: $json.error?.node?.name || 'unknown', message: $json.error?.message || $json.message || 'Erreur inconnue', emailId: $json.id, at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "3d76c7d8-13b2-472f-a1e9-11f2f168717d",
+      "name": "Journaliser les erreurs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        -160
+      ]
+    }
+  ],
+  "connections": {
+    "Toutes les 4 heures": {
+      "main": [
+        [
+          {
+            "node": "Rechercher nouveaux emails pertinents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rechercher nouveaux emails pertinents": {
+      "main": [
+        [
+          {
+            "node": "Classifier sujet et expéditeur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classifier sujet et expéditeur": {
+      "main": [
+        [
+          {
+            "node": "PDF détecté ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Télécharger les PDF": {
+      "main": [
+        [
+          {
+            "node": "Envoyer au backend et déclencher extraction texte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envoyer au backend et déclencher extraction texte": {
+      "main": [
+        [
+          {
+            "node": "Erreur ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Erreur ?": {
+      "main": [
+        [
+          {
+            "node": "Journaliser les erreurs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "PDF détecté ?": {
+      "main": [
+        [
+          {
+            "node": "Télécharger les PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [
+    {
+      "name": "lifepilot"
+    },
+    {
+      "name": "gmail"
+    }
+  ]
+}

@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         default=True,
         validation_alias="STORAGE_S3_USE_SSL",
     )
+    n8n_internal_secret: str | None = Field(
+        default=None,
+        validation_alias="N8N_INTERNAL_SECRET",
+    )
 
 
 @lru_cache
