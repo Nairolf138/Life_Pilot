@@ -5,7 +5,7 @@ type StatusBadgeVariant = "success" | "warning" | "danger" | "neutral" | "info";
 type StatCardProps = Readonly<{
   label: string;
   value: string;
-  trend?: string;
+  trend?: ReactNode;
   icon?: ReactNode;
 }>;
 

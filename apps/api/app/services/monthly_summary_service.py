@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
+from app.services.document_service import FINANCIAL_UNMATCHED_DOCUMENT_CONDITION
 from app.services.transaction_service import UNCERTAIN_CATEGORY_THRESHOLD
 
 
@@ -55,6 +56,7 @@ class MonthlySummary:
     uncategorized_transactions: list[MonthlyTransactionAttention]
     low_confidence_transactions: list[MonthlyTransactionAttention]
     transactions_without_document: list[MonthlyTransactionAttention]
+    financial_unmatched_documents_count: int
 
 
 class MonthlySummaryService:
@@ -98,6 +100,9 @@ class MonthlySummaryService:
             transactions_without_document=await self._fetch_attention_transactions(
                 common_params,
                 "t.linked_document_id IS NULL",
+            ),
+            financial_unmatched_documents_count=(
+                await self._count_financial_unmatched_documents(user_id)
             ),
         )
 
@@ -210,6 +215,20 @@ class MonthlySummaryService:
             )
             for row in result.mappings().all()
         ]
+
+    async def _count_financial_unmatched_documents(self, user_id: UUID) -> int:
+        result = await self._session.execute(
+            text(
+                f"""
+                SELECT count(*) AS document_count
+                FROM documents
+                WHERE user_id = :user_id
+                  AND {FINANCIAL_UNMATCHED_DOCUMENT_CONDITION}
+                """
+            ),
+            {"user_id": user_id},
+        )
+        return int(result.scalar_one())
 
 
 def month_bounds(month: str) -> tuple[date, date]:

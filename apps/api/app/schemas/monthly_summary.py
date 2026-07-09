@@ -51,3 +51,4 @@ class MonthlySummaryResponse(BaseModel):
     uncategorized_transactions: list[MonthlyTransactionAttentionResponse]
     low_confidence_transactions: list[MonthlyTransactionAttentionResponse]
     transactions_without_document: list[MonthlyTransactionAttentionResponse]
+    financial_unmatched_documents_count: int

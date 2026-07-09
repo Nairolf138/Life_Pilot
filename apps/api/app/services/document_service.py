@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, UploadFile, status
@@ -60,21 +60,48 @@ class DocumentService:
         self._session = session
         self._storage_service = storage_service
 
-    async def list_documents(self, user_id: UUID) -> list[DocumentRecord]:
+    async def list_documents(
+        self,
+        user_id: UUID,
+        *,
+        filter_name: Literal["financial_unmatched"] | None = None,
+    ) -> list[DocumentRecord]:
         """Liste les documents de l'utilisateur courant."""
+
+        extra_condition = ""
+        if filter_name == "financial_unmatched":
+            extra_condition = (
+                f"\n                  AND {FINANCIAL_UNMATCHED_DOCUMENT_CONDITION}"
+            )
 
         result = await self._session.execute(
             text(
                 f"""
                 SELECT {DOCUMENT_COLUMNS}
                 FROM documents
-                WHERE user_id = :user_id
+                WHERE user_id = :user_id{extra_condition}
                 ORDER BY created_at DESC
                 """
             ),
             {"user_id": user_id},
         )
         return [_document_from_row(row) for row in result.mappings().all()]
+
+    async def count_financial_unmatched_documents(self, user_id: UUID) -> int:
+        """Compte les documents financiers non rapprochés de l'utilisateur."""
+
+        result = await self._session.execute(
+            text(
+                f"""
+                SELECT count(*) AS document_count
+                FROM documents
+                WHERE user_id = :user_id
+                  AND {FINANCIAL_UNMATCHED_DOCUMENT_CONDITION}
+                """
+            ),
+            {"user_id": user_id},
+        )
+        return int(result.scalar_one())
 
     async def get_document(self, user_id: UUID, document_id: UUID) -> DocumentRecord:
         """Retourne un document appartenant à l'utilisateur courant."""
@@ -319,6 +346,24 @@ class DocumentService:
         )
         if result.first() is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Transaction introuvable.")
+
+
+FINANCIAL_DOCUMENT_TYPES = (
+    "facture",
+    "invoice",
+    "reçu",
+    "recu",
+    "receipt",
+    "avis",
+    "notice",
+    "contrat",
+    "contract",
+)
+FINANCIAL_UNMATCHED_DOCUMENT_CONDITION = (
+    "linked_transaction_id IS NULL "
+    "AND amount IS NOT NULL "
+    f"AND lower(document_type) IN {FINANCIAL_DOCUMENT_TYPES}"
+)
 
 
 DOCUMENT_COLUMNS = """

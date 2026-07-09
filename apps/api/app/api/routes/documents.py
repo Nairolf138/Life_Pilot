@@ -5,7 +5,17 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, File, Form, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 
 from app.schemas.document import (
     DocumentExtractRequest,
@@ -24,10 +34,17 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def list_documents(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     document_service: Annotated[DocumentService, Depends(get_document_service)],
+    financial_unmatched: Annotated[
+        bool,
+        Query(description="Limiter aux documents financiers non rapprochés."),
+    ] = False,
 ) -> list[DocumentResponse]:
     """Liste les documents de l'utilisateur authentifié."""
 
-    return await document_service.list_documents(current_user.id)
+    return await document_service.list_documents(
+        current_user.id,
+        filter_name="financial_unmatched" if financial_unmatched else None,
+    )
 
 
 @router.get("/{id}", response_model=DocumentResponse)
