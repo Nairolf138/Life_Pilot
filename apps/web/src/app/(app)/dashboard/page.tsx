@@ -33,6 +33,7 @@ type MonthlySummary = Readonly<{
   uncategorized_transactions: MonthlyTransactionAttention[];
   low_confidence_transactions: MonthlyTransactionAttention[];
   transactions_without_document: MonthlyTransactionAttention[];
+  financial_unmatched_documents_count: number;
 }>;
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
@@ -50,6 +51,7 @@ const emptyMonthlySummary = (month: string): MonthlySummary => ({
   uncategorized_transactions: [],
   low_confidence_transactions: [],
   transactions_without_document: [],
+  financial_unmatched_documents_count: 0,
 });
 
 async function getMonthlySummary(month: string): Promise<{ data: MonthlySummary; isFallback: boolean }> {
@@ -104,6 +106,7 @@ export default async function DashboardPage() {
     ["Transactions non catégorisées", "Catégorisation", <StatusBadge key="uncategorized" variant="warning">{summary.uncategorized_transactions.length}</StatusBadge>],
     ["Transactions à faible confiance", "Catégorisation", <StatusBadge key="confidence" variant="warning">{summary.low_confidence_transactions.length}</StatusBadge>],
     ["Transactions sans justificatif", "Documents", <StatusBadge key="documents" variant="neutral">{summary.transactions_without_document.length}</StatusBadge>],
+    ["Documents financiers non rapprochés", "Documents", <StatusBadge key="financial-documents" variant="warning">{summary.financial_unmatched_documents_count}</StatusBadge>],
     ["Transactions à vérifier", "Priorités", <StatusBadge key="transactions" variant="info">{transactionsToReview}</StatusBadge>],
   ];
 
@@ -138,6 +141,12 @@ export default async function DashboardPage() {
         <StatCard label="Dépenses du mois" value={formatCurrency(summary.expenses)} trend="Sorties hors virements internes" icon="−" />
         <StatCard label="Épargne estimée" value={formatCurrency(summary.estimated_savings)} trend="Revenus moins dépenses" icon="↗" />
         <StatCard label="Reste à vivre estimé" value={formatCurrency(summary.estimated_remaining)} trend="Après dépenses du mois" icon="=" />
+        <StatCard
+          label="Documents financiers non rapprochés"
+          value={summary.financial_unmatched_documents_count.toString()}
+          trend={<a href="/documents?filter=financial-unmatched">Voir les documents à rapprocher</a>}
+          icon="!"
+        />
       </div>
 
       {isFallback ? (
