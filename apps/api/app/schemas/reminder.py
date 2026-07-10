@@ -22,8 +22,9 @@ class ReminderStatus(StrEnum):
     """États métier d'un rappel."""
 
     PENDING = "pending"
+    SENT = "sent"
     COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    DISMISSED = "dismissed"
 
 
 class ReminderSourceType(StrEnum):
