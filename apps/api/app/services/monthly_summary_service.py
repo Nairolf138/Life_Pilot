@@ -15,6 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.services.document_service import FINANCIAL_UNMATCHED_DOCUMENT_CONDITION
 from app.services.transaction_service import UNCERTAIN_CATEGORY_THRESHOLD
+from app.services.document_requirement_service import (
+    PROFESSIONAL_OR_TAX_TAGS,
+    default_document_amount_threshold,
+    document_requirement_condition,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,8 @@ class MonthlySummary:
     low_confidence_transactions: list[MonthlyTransactionAttention]
     transactions_without_document: list[MonthlyTransactionAttention]
     financial_unmatched_documents_count: int
+    transactions_without_document_count: int
+    transactions_without_document_amount: Decimal
 
 
 class MonthlySummaryService:
@@ -74,6 +81,9 @@ class MonthlySummaryService:
             "period_start": period_start,
             "period_end": period_end,
             "category_threshold": UNCERTAIN_CATEGORY_THRESHOLD,
+            "document_amount_threshold": default_document_amount_threshold(),
+            "ignored_document_category_ids": await self._fetch_ignored_document_category_ids(user_id),
+            "document_required_tags": list(PROFESSIONAL_OR_TAX_TAGS),
         }
 
         totals = await self._fetch_totals(common_params)
@@ -99,11 +109,12 @@ class MonthlySummaryService:
             ),
             transactions_without_document=await self._fetch_attention_transactions(
                 common_params,
-                "t.linked_document_id IS NULL",
+                document_requirement_condition("t"),
             ),
             financial_unmatched_documents_count=(
                 await self._count_financial_unmatched_documents(user_id)
             ),
+            **await self._fetch_transactions_without_document_summary(common_params),
         )
 
     async def _fetch_totals(self, params: dict[str, object]) -> dict[str, Decimal]:
@@ -215,6 +226,47 @@ class MonthlySummaryService:
             )
             for row in result.mappings().all()
         ]
+
+
+    async def _fetch_transactions_without_document_summary(
+        self,
+        params: dict[str, object],
+    ) -> dict[str, Decimal | int]:
+        result = await self._session.execute(
+            text(
+                f"""
+                SELECT
+                    count(*) AS transaction_count,
+                    coalesce(sum(abs(t.amount)), 0) AS amount
+                FROM transactions t
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE t.user_id = :user_id
+                  AND t.booking_date >= :period_start
+                  AND t.booking_date <= :period_end
+                  AND {document_requirement_condition("t")}
+                """
+            ),
+            params,
+        )
+        row = result.mappings().one()
+        return {
+            "transactions_without_document_count": int(row.transaction_count),
+            "transactions_without_document_amount": Decimal(row.amount),
+        }
+
+    async def _fetch_ignored_document_category_ids(self, user_id: UUID) -> list[UUID]:
+        result = await self._session.execute(
+            text(
+                """
+                SELECT ignored_document_category_ids
+                FROM users
+                WHERE id = :user_id
+                """
+            ),
+            {"user_id": user_id},
+        )
+        value = result.scalar_one_or_none()
+        return list(value or [])
 
     async def _count_financial_unmatched_documents(self, user_id: UUID) -> int:
         result = await self._session.execute(

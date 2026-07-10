@@ -14,6 +14,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
+from app.services.document_requirement_service import (
+    PROFESSIONAL_OR_TAX_TAGS,
+    default_document_amount_threshold,
+    document_requirement_condition,
+)
 from app.schemas.transaction import (
     TransactionCategoryPatch,
     TransactionDocumentLink,
@@ -73,40 +78,45 @@ class TransactionService:
     ) -> list[TransactionRecord]:
         """Liste les transactions de l'utilisateur courant avec filtres optionnels."""
 
-        conditions = ["user_id = :user_id"]
+        conditions = ["transactions.user_id = :user_id"]
         params: dict[str, object] = {"user_id": user_id}
         if account_id is not None:
-            conditions.append("account_id = :account_id")
+            conditions.append("transactions.account_id = :account_id")
             params["account_id"] = account_id
         if date_from is not None:
-            conditions.append("booking_date >= :date_from")
+            conditions.append("transactions.booking_date >= :date_from")
             params["date_from"] = date_from
         if date_to is not None:
-            conditions.append("booking_date <= :date_to")
+            conditions.append("transactions.booking_date <= :date_to")
             params["date_to"] = date_to
         if category_id is not None:
-            conditions.append("category_id = :category_id")
+            conditions.append("transactions.category_id = :category_id")
             params["category_id"] = category_id
         if amount_min is not None:
-            conditions.append("amount >= :amount_min")
+            conditions.append("transactions.amount >= :amount_min")
             params["amount_min"] = amount_min
         if amount_max is not None:
-            conditions.append("amount <= :amount_max")
+            conditions.append("transactions.amount <= :amount_max")
             params["amount_max"] = amount_max
         if without_reliable_category:
             conditions.append(
-                "(category_id IS NULL OR confidence_score IS NULL "
-                "OR confidence_score < :category_threshold)"
+                "(transactions.category_id IS NULL OR transactions.confidence_score IS NULL "
+                "OR transactions.confidence_score < :category_threshold)"
             )
             params["category_threshold"] = UNCERTAIN_CATEGORY_THRESHOLD
         if without_document:
-            conditions.append("linked_document_id IS NULL")
+            ignored_categories = await self._fetch_ignored_document_category_ids(user_id)
+            conditions.append(document_requirement_condition("transactions"))
+            params["document_amount_threshold"] = default_document_amount_threshold()
+            params["ignored_document_category_ids"] = ignored_categories
+            params["document_required_tags"] = list(PROFESSIONAL_OR_TAX_TAGS)
 
         result = await self._session.execute(
             text(
                 f"""
-                SELECT {TRANSACTION_COLUMNS}
+                SELECT transactions.id, transactions.account_id, transactions.external_id_hash, transactions.booking_date, transactions.value_date, transactions.label_raw, transactions.label_clean, transactions.merchant_name, transactions.amount, transactions.currency, transactions.transaction_type, transactions.category_id, transactions.subcategory_id, transactions.confidence_score, transactions.is_recurring, transactions.is_internal_transfer, transactions.linked_document_id, transactions.notes, transactions.raw_data_json, transactions.created_at, transactions.updated_at
                 FROM transactions
+                LEFT JOIN categories c ON c.id = transactions.category_id
                 WHERE {" AND ".join(conditions)}
                 ORDER BY booking_date DESC, created_at DESC
                 """
@@ -274,6 +284,21 @@ class TransactionService:
         )
         await self._session.commit()
         return _transaction_from_row(row)
+
+
+    async def _fetch_ignored_document_category_ids(self, user_id: UUID) -> list[UUID]:
+        result = await self._session.execute(
+            text(
+                """
+                SELECT ignored_document_category_ids
+                FROM users
+                WHERE id = :user_id
+                """
+            ),
+            {"user_id": user_id},
+        )
+        value = result.scalar_one_or_none()
+        return list(value or [])
 
     async def _create_categorization_rule_from_transaction(
         self,
