@@ -61,6 +61,10 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="N8N_INTERNAL_SECRET",
     )
+    document_required_amount_threshold: float = Field(
+        default=100.0,
+        validation_alias="DOCUMENT_REQUIRED_AMOUNT_THRESHOLD",
+    )
 
 
 @lru_cache

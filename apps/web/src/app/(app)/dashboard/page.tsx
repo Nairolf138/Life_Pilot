@@ -34,6 +34,8 @@ type MonthlySummary = Readonly<{
   low_confidence_transactions: MonthlyTransactionAttention[];
   transactions_without_document: MonthlyTransactionAttention[];
   financial_unmatched_documents_count: number;
+  transactions_without_document_count: number;
+  transactions_without_document_amount: string;
 }>;
 
 const currentMonth = () => new Date().toISOString().slice(0, 7);
@@ -52,6 +54,8 @@ const emptyMonthlySummary = (month: string): MonthlySummary => ({
   low_confidence_transactions: [],
   transactions_without_document: [],
   financial_unmatched_documents_count: 0,
+  transactions_without_document_count: 0,
+  transactions_without_document_amount: "0",
 });
 
 async function getMonthlySummary(month: string): Promise<{ data: MonthlySummary; isFallback: boolean }> {
@@ -105,7 +109,7 @@ export default async function DashboardPage() {
   const reviewRows = [
     ["Transactions non catégorisées", "Catégorisation", <StatusBadge key="uncategorized" variant="warning">{summary.uncategorized_transactions.length}</StatusBadge>],
     ["Transactions à faible confiance", "Catégorisation", <StatusBadge key="confidence" variant="warning">{summary.low_confidence_transactions.length}</StatusBadge>],
-    ["Transactions sans justificatif", "Documents", <StatusBadge key="documents" variant="neutral">{summary.transactions_without_document.length}</StatusBadge>],
+    ["Transactions sans justificatif", "Documents", <StatusBadge key="documents" variant="neutral">{summary.transactions_without_document_count}</StatusBadge>],
     ["Documents financiers non rapprochés", "Documents", <StatusBadge key="financial-documents" variant="warning">{summary.financial_unmatched_documents_count}</StatusBadge>],
     ["Transactions à vérifier", "Priorités", <StatusBadge key="transactions" variant="info">{transactionsToReview}</StatusBadge>],
   ];
@@ -141,6 +145,12 @@ export default async function DashboardPage() {
         <StatCard label="Dépenses du mois" value={formatCurrency(summary.expenses)} trend="Sorties hors virements internes" icon="−" />
         <StatCard label="Épargne estimée" value={formatCurrency(summary.estimated_savings)} trend="Revenus moins dépenses" icon="↗" />
         <StatCard label="Reste à vivre estimé" value={formatCurrency(summary.estimated_remaining)} trend="Après dépenses du mois" icon="=" />
+        <StatCard
+          label="Transactions sans justificatif"
+          value={summary.transactions_without_document_count.toString()}
+          trend={<a href="/transactions?without_document=true">Voir la liste filtrée · {formatCurrency(summary.transactions_without_document_amount)}</a>}
+          icon="!"
+        />
         <StatCard
           label="Documents financiers non rapprochés"
           value={summary.financial_unmatched_documents_count.toString()}
@@ -214,7 +224,7 @@ export default async function DashboardPage() {
       <div className="page-card">
         <h3>Sans justificatif</h3>
         <DataTable
-          caption="Transactions non rattachées à un document"
+          caption={`Transactions pertinentes sans justificatif · total ${formatCurrency(summary.transactions_without_document_amount)}`}
           columns={["Date", "Libellé", "Montant", "Catégorie"]}
           rows={attentionRows(summary.transactions_without_document)}
         />

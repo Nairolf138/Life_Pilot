@@ -52,3 +52,5 @@ class MonthlySummaryResponse(BaseModel):
     low_confidence_transactions: list[MonthlyTransactionAttentionResponse]
     transactions_without_document: list[MonthlyTransactionAttentionResponse]
     financial_unmatched_documents_count: int
+    transactions_without_document_count: int
+    transactions_without_document_amount: Decimal
