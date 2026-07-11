@@ -65,6 +65,46 @@ class Settings(BaseSettings):
         default=100.0,
         validation_alias="DOCUMENT_REQUIRED_AMOUNT_THRESHOLD",
     )
+    notification_smtp_host: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_SMTP_HOST",
+    )
+    notification_smtp_port: int = Field(
+        default=587,
+        validation_alias="NOTIFICATION_SMTP_PORT",
+    )
+    notification_smtp_username: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_SMTP_USERNAME",
+    )
+    notification_smtp_password: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_SMTP_PASSWORD",
+    )
+    notification_smtp_use_tls: bool = Field(
+        default=True,
+        validation_alias="NOTIFICATION_SMTP_USE_TLS",
+    )
+    notification_email_from: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_EMAIL_FROM",
+    )
+    notification_telegram_bot_token: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_TELEGRAM_BOT_TOKEN",
+    )
+    notification_whatsapp_access_token: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_WHATSAPP_ACCESS_TOKEN",
+    )
+    notification_whatsapp_phone_number_id: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_WHATSAPP_PHONE_NUMBER_ID",
+    )
+    notification_n8n_webhook_url: str | None = Field(
+        default=None,
+        validation_alias="NOTIFICATION_N8N_WEBHOOK_URL",
+    )
 
 
 @lru_cache
