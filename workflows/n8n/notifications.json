@@ -1,0 +1,301 @@
+{
+  "name": "Life Pilot - Notifications quotidiennes",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 8,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "0f197fe7-8f14-4d56-b7b9-c0b1f0199e9c",
+      "name": "Tous les jours à 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/notifications/candidates' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "={{ $env.LIFEPILOT_NOTIFICATIONS_LIMIT || 100 }}"
+            },
+            {
+              "name": "mark_as_sent",
+              "value": "false"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            }
+          ]
+        }
+      },
+      "id": "b97fe1fc-2054-447e-88b0-561df6adba6e",
+      "name": "Récupérer les notifications candidates",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ Boolean($json.error) }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "dc533e12-2b98-4550-a183-ff99e7011d07",
+      "name": "Erreur récupération ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = Array.isArray($json) ? $json : ($json.candidates || $json.notifications || $json.data || []);\nconst priorityRank = { critical: 1, urgent: 2, warning: 3, info: 4 };\nconst grouped = new Map();\nfor (const notification of payload) {\n  const priority = notification.priority || notification.severity || 'info';\n  if (!grouped.has(priority)) grouped.set(priority, []);\n  grouped.get(priority).push(notification);\n}\nreturn [...grouped.entries()]\n  .sort(([left], [right]) => (priorityRank[left] || 99) - (priorityRank[right] || 99))\n  .map(([priority, notifications]) => ({\n    json: {\n      priority,\n      channel: $env.LIFEPILOT_NOTIFICATION_CHANNEL || 'n8n_webhook',\n      notifications,\n      notification_ids: notifications.map((notification) => notification.id || notification.reminder_id).filter(Boolean),\n      count: notifications.length,\n      generated_at: new Date().toISOString()\n    }\n  }));"
+      },
+      "id": "dfbdbf6b-1e13-4b5e-a1e2-a36a2a8511b1",
+      "name": "Regrouper par priorité",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_NOTIFICATION_CHANNEL_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ $env.LIFEPILOT_NOTIFICATION_CHANNEL_AUTH || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: 'lifepilot', channel: $json.channel, priority: $json.priority, count: $json.count, notifications: $json.notifications, generated_at: $json.generated_at }) }}"
+      },
+      "id": "e2228593-e03e-40e1-876a-b03650cbe11c",
+      "name": "Envoyer via canal configuré",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        80
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ Boolean($json.error) }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "f29b8b18-d5d7-4021-964d-8d01d4605234",
+      "name": "Erreur canal ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/notifications/mark-sent' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ notification_ids: $('Regrouper par priorité').item.json.notification_ids, priority: $('Regrouper par priorité').item.json.priority, channel: $('Regrouper par priorité').item.json.channel, sent_at: new Date().toISOString() }) }}"
+      },
+      "id": "b9c360e1-d984-4024-b6b9-43a8a7c20b43",
+      "name": "Marquer les notifications envoyées",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const group = $('Regrouper par priorité').item.json;\nconsole.error(JSON.stringify({ workflow: 'Life Pilot - Notifications quotidiennes', step: $json.error?.node?.name || 'channel', message: $json.error?.message || $json.message || 'Erreur canal inconnue', priority: group.priority, notification_ids: group.notification_ids || [], at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "3a8c6215-ced3-4037-8c0b-5d9834cfab88",
+      "name": "Journaliser erreurs de canal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error(JSON.stringify({ workflow: 'Life Pilot - Notifications quotidiennes', step: $json.error?.node?.name || 'candidate-fetch', message: $json.error?.message || $json.message || 'Erreur de récupération inconnue', at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "bcefbf50-9471-4907-b49b-cb32c5d8618a",
+      "name": "Journaliser erreurs récupération",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        -120
+      ]
+    }
+  ],
+  "connections": {
+    "Tous les jours à 08:00": {
+      "main": [
+        [
+          {
+            "node": "Récupérer les notifications candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Récupérer les notifications candidates": {
+      "main": [
+        [
+          {
+            "node": "Erreur récupération ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Erreur récupération ?": {
+      "main": [
+        [
+          {
+            "node": "Journaliser erreurs récupération",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Regrouper par priorité",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regrouper par priorité": {
+      "main": [
+        [
+          {
+            "node": "Envoyer via canal configuré",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envoyer via canal configuré": {
+      "main": [
+        [
+          {
+            "node": "Erreur canal ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Erreur canal ?": {
+      "main": [
+        [
+          {
+            "node": "Journaliser erreurs de canal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Marquer les notifications envoyées",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [
+    {
+      "name": "lifepilot"
+    },
+    {
+      "name": "notifications"
+    }
+  ]
+}
