@@ -141,3 +141,113 @@ Le backend doit seulement marquer comme envoyées les notifications listées lor
 ### Journalisation des erreurs de canal
 
 Le nœud `Journaliser erreurs de canal` écrit un objet JSON dans les logs n8n avec le workflow, l'étape, le message d'erreur, la priorité et les identifiants concernés. En production, ce nœud peut être remplacé ou complété par une alerte Slack, email d'astreinte, entrée d'audit ou intégration d'observabilité.
+
+## Surveillance hebdomadaire des abonnements
+
+Le workflow `workflows/n8n/subscription-monitor.json` automatise la surveillance des prélèvements récurrents afin de transformer les récurrences détectées en contrats suivis et en alertes actionnables.
+
+### Déclenchement
+
+- Le nœud **Chaque lundi à 06:00** exécute le workflow une fois par semaine.
+- La fréquence peut être adaptée dans n8n si l'analyse bancaire est plus ou moins coûteuse, mais une cadence hebdomadaire limite le bruit tout en détectant rapidement les nouveaux abonnements et les hausses de prix.
+
+### Étapes du workflow
+
+1. **Lancement ou récupération de l'analyse** : le nœud HTTP `Lancer ou récupérer l'analyse` appelle `POST /internal/n8n/recurrences/analyze` avec l'utilisateur cible, une fenêtre d'analyse et une clé d'idempotence hebdomadaire. Le mode `launch_or_get` permet au backend de lancer une analyse si nécessaire ou de renvoyer un résultat déjà calculé pour la même période.
+2. **Détection des nouveaux abonnements** : le nœud Code `Normaliser récurrences` transforme les détections en items n8n homogènes et marque `is_new_subscription` lorsque le backend signale un nouveau prélèvement récurrent ou une récurrence sans contrat associé.
+3. **Détection des variations de prix** : le même nœud expose `has_price_variation` lorsque les alertes de l'analyse contiennent une hausse de prix. Le nœud `Variations de prix ?` isole ensuite ces cas pour déclencher un rappel ou une notification.
+4. **Création ou mise à jour des contrats** : le nœud `Créer ou mettre à jour les contrats` appelle `POST /internal/n8n/contracts/upsert-from-recurrence` pour créer un contrat `to_review` ou mettre à jour un contrat existant à partir de la suggestion de récurrence.
+5. **Création de rappels ou notifications** : le nœud `Créer rappels ou notifications` appelle `POST /internal/n8n/subscription-monitor/reminders` pour créer les rappels, notifications in-app ou alertes de validation nécessaires, notamment en cas de hausse de prix.
+6. **Journalisation** : les nœuds `Journaliser erreurs analyse` et `Journaliser résultat` consignent les erreurs d'analyse et le statut des écritures effectuées par le workflow.
+
+### Variables d'environnement n8n
+
+Configurer les variables suivantes côté n8n :
+
+| Variable | Description |
+| --- | --- |
+| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
+| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret` pour les appels internes. |
+| `LIFEPILOT_USER_ID` | UUID de l'utilisateur Life Pilot dont les transactions doivent être analysées. |
+| `LIFEPILOT_SUBSCRIPTION_LOOKBACK_DAYS` | Nombre de jours d'historique bancaire analysés. Valeur par défaut du workflow : `400`. |
+| `LIFEPILOT_SUBSCRIPTION_ANALYSIS_MODE` | Mode d'analyse envoyé au backend. Valeur par défaut : `launch_or_get`. |
+
+### Contrat API attendu
+
+Le workflow suppose des endpoints internes protégés par `X-N8N-Secret`.
+
+```http
+POST /internal/n8n/recurrences/analyze
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+Corps envoyé par n8n :
+
+```json
+{
+  "user_id": "user-id",
+  "lookback_days": 400,
+  "create_alerts": false,
+  "idempotency_key": "subscription-monitor:2026-07-12",
+  "mode": "launch_or_get"
+}
+```
+
+Réponse attendue, directement ou enveloppée dans `report`, `analysis` ou `data` :
+
+```json
+{
+  "analysis_id": "analysis-id",
+  "user_id": "user-id",
+  "detections": [
+    {
+      "key": "account:category:merchant:monthly",
+      "period": "monthly",
+      "merchant_or_label": "netflix",
+      "average_amount": "13.49",
+      "currency": "EUR",
+      "first_seen_at": "2026-01-10",
+      "last_seen_at": "2026-07-10",
+      "transaction_ids": ["transaction-id"],
+      "contract": {
+        "provider": "Netflix",
+        "name": "Netflix",
+        "contract_type": "other",
+        "payment_frequency": "monthly",
+        "monthly_cost": "13.49",
+        "yearly_cost": "161.88",
+        "contract_id": null,
+        "should_create": true
+      },
+      "alerts": [
+        {
+          "alert_type": "subscription_without_contract",
+          "title": "Abonnement sans contrat associé : netflix",
+          "severity": "warning"
+        }
+      ]
+    }
+  ]
+}
+```
+
+```http
+POST /internal/n8n/contracts/upsert-from-recurrence
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+Le payload contient la clé de récurrence, le fournisseur, le nom du contrat, la fréquence, les coûts estimés et les transactions sources. Le backend doit créer un contrat `to_review` si aucun contrat compatible n'existe, ou mettre à jour le coût et les métadonnées de suivi si un contrat est déjà rattaché.
+
+```http
+POST /internal/n8n/subscription-monitor/reminders
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+Le payload contient la clé de récurrence, les alertes associées, les transactions sources et `notify: true`. Le backend doit créer uniquement les rappels ou notifications utiles et éviter les doublons grâce à la clé de récurrence et aux types d'alertes.
+
+### Journalisation et idempotence
+
+La clé `subscription-monitor:<date ISO>` évite de relancer plusieurs fois la même analyse hebdomadaire si le workflow est rejoué. Les écritures backend doivent rester idempotentes côté contrats et rappels, car n8n peut réessayer un nœud après une erreur réseau.
