@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Annotated
 from uuid import UUID
 
@@ -12,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db_session
 from app.models.vehicle import Vehicle, VehicleEvent
 from app.schemas.vehicle import VehicleCreate, VehicleEventCreate, VehicleUpdate
+
+TECHNICAL_INSPECTION_REMINDER_OFFSETS = (90, 60, 30, 15, 7)
+TECHNICAL_INSPECTION_REMINDER_RULE_PREFIX = "vehicle:technical_inspection_due_date"
 
 VEHICLE_COLUMNS = """
     id, user_id, brand, model, version, registration_masked, vin_hash,
@@ -83,8 +87,10 @@ class VehicleService:
             ),
             {"user_id": user_id, **values},
         )
+        row = result.mappings().one()
+        await self._sync_technical_inspection_reminders(user_id, row)
         await self._session.commit()
-        return _vehicle_from_row(result.mappings().one())
+        return _vehicle_from_row(row)
 
     async def update_vehicle(
         self,
@@ -123,8 +129,10 @@ class VehicleService:
             ),
             {"vehicle_id": vehicle_id, "user_id": user_id, **changes},
         )
+        row = result.mappings().one()
+        await self._sync_technical_inspection_reminders(user_id, row)
         await self._session.commit()
-        return _vehicle_from_row(result.mappings().one())
+        return _vehicle_from_row(row)
 
     async def create_vehicle_event(
         self,
@@ -157,6 +165,103 @@ class VehicleService:
         )
         await self._session.commit()
         return _vehicle_event_from_row(result.mappings().one())
+
+    async def _sync_technical_inspection_reminders(self, user_id: UUID, vehicle) -> None:
+        """Synchronise les rappels d'échéance de contrôle technique du véhicule."""
+
+        await self._delete_technical_inspection_reminders(user_id, vehicle.id)
+        due_date = vehicle.technical_inspection_due_date
+        if due_date is None:
+            return
+
+        today = date.today()
+        vehicle_label = _vehicle_label(vehicle)
+        if due_date < today:
+            await self._create_technical_inspection_reminder(
+                user_id=user_id,
+                vehicle_id=vehicle.id,
+                vehicle_label=vehicle_label,
+                due_date=due_date,
+                reminder_date=today,
+                severity="critical",
+                recurrence_rule=f"{TECHNICAL_INSPECTION_REMINDER_RULE_PREFIX}:overdue",
+            )
+            return
+
+        for offset_days in TECHNICAL_INSPECTION_REMINDER_OFFSETS:
+            await self._create_technical_inspection_reminder(
+                user_id=user_id,
+                vehicle_id=vehicle.id,
+                vehicle_label=vehicle_label,
+                due_date=due_date,
+                reminder_date=due_date - timedelta(days=offset_days),
+                severity="warning" if offset_days in (90, 60, 30) else "urgent",
+                recurrence_rule=(
+                    f"{TECHNICAL_INSPECTION_REMINDER_RULE_PREFIX}:J-{offset_days}"
+                ),
+            )
+
+    async def _delete_technical_inspection_reminders(
+        self, user_id: UUID, vehicle_id: UUID
+    ) -> None:
+        await self._session.execute(
+            text(
+                """
+                DELETE FROM reminders
+                WHERE user_id = :user_id
+                  AND source_type = 'vehicle'
+                  AND source_id = :vehicle_id
+                  AND recurrence_rule LIKE :recurrence_rule_pattern
+                """
+            ),
+            {
+                "user_id": user_id,
+                "vehicle_id": vehicle_id,
+                "recurrence_rule_pattern": (
+                    f"{TECHNICAL_INSPECTION_REMINDER_RULE_PREFIX}:%"
+                ),
+            },
+        )
+
+    async def _create_technical_inspection_reminder(
+        self,
+        *,
+        user_id: UUID,
+        vehicle_id: UUID,
+        vehicle_label: str,
+        due_date: date,
+        reminder_date: date,
+        severity: str,
+        recurrence_rule: str,
+    ) -> None:
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO reminders (
+                    user_id, source_type, source_id, title, description, due_date,
+                    reminder_date, severity, status, recurrence_rule,
+                    notification_channels
+                ) VALUES (
+                    :user_id, 'vehicle', :vehicle_id, :title, :description,
+                    :due_date, :reminder_date, :severity, 'pending',
+                    :recurrence_rule, ARRAY[]::TEXT[]
+                )
+                """
+            ),
+            {
+                "user_id": user_id,
+                "vehicle_id": vehicle_id,
+                "title": f"Contrôle technique à prévoir - {vehicle_label}",
+                "description": (
+                    "Échéance de contrôle technique du véhicule "
+                    f"{vehicle_label} le {due_date.isoformat()}."
+                ),
+                "due_date": due_date,
+                "reminder_date": reminder_date,
+                "severity": severity,
+                "recurrence_rule": recurrence_rule,
+            },
+        )
 
     async def _fetch_vehicle(self, user_id: UUID, vehicle_id: UUID):
         result = await self._session.execute(
@@ -273,3 +378,9 @@ def _vehicle_event_from_row(row) -> VehicleEvent:
         next_due_mileage=row.next_due_mileage,
         created_at=row.created_at,
     )
+
+
+def _vehicle_label(row) -> str:
+    """Construit un libellé lisible et robuste pour les rappels véhicule."""
+
+    return " ".join(part for part in (row.brand, row.model) if part)
