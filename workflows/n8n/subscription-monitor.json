@@ -1,0 +1,343 @@
+{
+  "name": "Life Pilot - Subscription monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 6,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "f3360334-9e2a-4d8d-9ac5-d815744a99cb",
+      "name": "Chaque lundi à 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/recurrences/analyze' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ user_id: $env.LIFEPILOT_USER_ID, lookback_days: Number($env.LIFEPILOT_SUBSCRIPTION_LOOKBACK_DAYS || 400), create_alerts: false, idempotency_key: 'subscription-monitor:' + new Date().toISOString().slice(0, 10), mode: $env.LIFEPILOT_SUBSCRIPTION_ANALYSIS_MODE || 'launch_or_get' }) }}"
+      },
+      "id": "0c88e447-bac4-48b1-9b13-85a4804537f3",
+      "name": "Lancer ou récupérer l'analyse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ Boolean($json.error) }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "6ab12aa4-2dc0-4b22-9d0e-96fcdf198277",
+      "name": "Erreur analyse ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.report || $json.analysis || $json.data || $json;\nconst detections = Array.isArray(payload) ? payload : (payload.detections || []);\nconst alerts = Array.isArray(payload.created_alerts) ? payload.created_alerts : (payload.alerts || []);\nconst byKey = new Map();\nfor (const detection of detections) {\n  const detectionAlerts = Array.isArray(detection.alerts) ? detection.alerts : [];\n  const alertTypes = new Set(detectionAlerts.map((alert) => alert.alert_type || alert.type));\n  const contract = detection.contract || {};\n  const key = detection.key || `${detection.account_id || 'account'}:${detection.merchant_or_label || contract.provider || 'unknown'}:${detection.period || 'unknown'}`;\n  byKey.set(key, {\n    analysis_id: payload.analysis_id || payload.id,\n    user_id: payload.user_id || $env.LIFEPILOT_USER_ID,\n    key,\n    merchant_or_label: detection.merchant_or_label || contract.provider || contract.name,\n    period: detection.period,\n    account_id: detection.account_id,\n    category_id: detection.category_id,\n    currency: detection.currency || 'EUR',\n    average_amount: detection.average_amount,\n    first_seen_at: detection.first_seen_at,\n    last_seen_at: detection.last_seen_at,\n    transaction_ids: detection.transaction_ids || [],\n    contract,\n    is_new_subscription: Boolean(contract.should_create) || alertTypes.has('new_recurring_debit') || alertTypes.has('subscription_without_contract'),\n    has_price_variation: alertTypes.has('price_increase'),\n    alerts: detectionAlerts\n  });\n}\nfor (const alert of alerts) {\n  const key = alert.detection_key || alert.key;\n  if (key && byKey.has(key)) byKey.get(key).alerts.push(alert);\n}\nreturn [...byKey.values()].map((item) => ({ json: item }));"
+      },
+      "id": "e07e71ad-3696-4b09-bba6-4f9bbbb12737",
+      "name": "Normaliser récurrences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_new_subscription }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "d3e2aabf-291f-4c90-af71-2043bcd78d83",
+      "name": "Nouveaux abonnements ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_price_variation }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "ba8d06f5-c53f-430c-928e-093add849acf",
+      "name": "Variations de prix ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1040,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/contracts/upsert-from-recurrence' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ user_id: $json.user_id, recurrence_key: $json.key, provider: $json.contract.provider || $json.merchant_or_label, name: $json.contract.name || $json.merchant_or_label, contract_type: $json.contract.contract_type || 'other', payment_frequency: $json.contract.payment_frequency || $json.period, monthly_cost: $json.contract.monthly_cost, yearly_cost: $json.contract.yearly_cost, source_transaction_ids: $json.transaction_ids, status: 'to_review' }) }}"
+      },
+      "id": "2ffdcd8b-3be5-49c0-9eeb-b6a98dbae50e",
+      "name": "Créer ou mettre à jour les contrats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        -40
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/subscription-monitor/reminders' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-Secret",
+              "value": "={{ $env.LIFEPILOT_N8N_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ user_id: $json.user_id, recurrence_key: $json.key, merchant_or_label: $json.merchant_or_label, period: $json.period, alerts: $json.alerts, transaction_ids: $json.transaction_ids, notify: true }) }}"
+      },
+      "id": "50d5e06f-8910-48d1-96e1-4760b17d6561",
+      "name": "Créer rappels ou notifications",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        160
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "console.error(JSON.stringify({ workflow: 'Life Pilot - Subscription monitor', step: $json.error?.node?.name || 'recurrence-analysis', message: $json.error?.message || $json.message || 'Erreur analyse inconnue', at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "eb2ea4bb-1701-4f54-b6ea-74c11fbb38f7",
+      "name": "Journaliser erreurs analyse",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({ workflow: 'Life Pilot - Subscription monitor', recurrence_key: $json.recurrence_key || $('Normaliser récurrences').item.json.key, status: $json.error ? 'error' : 'ok', message: $json.error?.message, at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "53a3b41d-4957-461e-ab30-d0f13475fd12",
+      "name": "Journaliser résultat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        60
+      ]
+    }
+  ],
+  "connections": {
+    "Chaque lundi à 06:00": {
+      "main": [
+        [
+          {
+            "node": "Lancer ou récupérer l'analyse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lancer ou récupérer l'analyse": {
+      "main": [
+        [
+          {
+            "node": "Erreur analyse ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Erreur analyse ?": {
+      "main": [
+        [
+          {
+            "node": "Journaliser erreurs analyse",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normaliser récurrences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normaliser récurrences": {
+      "main": [
+        [
+          {
+            "node": "Nouveaux abonnements ?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Variations de prix ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nouveaux abonnements ?": {
+      "main": [
+        [
+          {
+            "node": "Créer ou mettre à jour les contrats",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Variations de prix ?": {
+      "main": [
+        [
+          {
+            "node": "Créer rappels ou notifications",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Créer ou mettre à jour les contrats": {
+      "main": [
+        [
+          {
+            "node": "Journaliser résultat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Créer rappels ou notifications": {
+      "main": [
+        [
+          {
+            "node": "Journaliser résultat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [
+    {
+      "name": "lifepilot"
+    },
+    {
+      "name": "subscriptions"
+    },
+    {
+      "name": "recurrences"
+    }
+  ]
+}
