@@ -251,3 +251,117 @@ Le payload contient la clé de récurrence, les alertes associées, les transact
 ### Journalisation et idempotence
 
 La clé `subscription-monitor:<date ISO>` évite de relancer plusieurs fois la même analyse hebdomadaire si le workflow est rejoué. Les écritures backend doivent rester idempotentes côté contrats et rappels, car n8n peut réessayer un nœud après une erreur réseau.
+
+## Rappels véhicules quotidiens
+
+Le workflow `workflows/n8n/vehicle-reminders.json` automatise la surveillance des échéances liées aux véhicules afin de créer ou mettre à jour les rappels Life Pilot avant qu'une action ne soit urgente.
+
+### Déclenchement
+
+- Le nœud **Tous les jours à 07:30** exécute le workflow une fois par jour.
+- L'horaire peut être ajusté selon le fuseau de l'utilisateur, par exemple avant le digest de notifications quotidiennes pour que les nouveaux rappels soient inclus dans la tournée du matin.
+
+### Étapes du workflow
+
+1. **Chargement des véhicules** : le nœud HTTP `Charger les véhicules` appelle `GET /internal/n8n/vehicles` avec l'utilisateur cible, les événements d'entretien et une fenêtre de projection.
+2. **Vérification du contrôle technique** : le nœud Code `Vérifier échéances véhicules` lit `technical_inspection_due_date` et génère une action lorsque l'échéance est dépassée ou comprise dans la fenêtre configurée.
+3. **Vérification de l'assurance** : le même nœud inspecte le contrat d'assurance rattaché au véhicule via `insurance_contract_id` ou l'objet `insurance_contract`, puis surveille `insurance_due_date`, `next_due_date`, `end_date` ou `renewal_date` selon les données exposées par le backend.
+4. **Vérification des entretiens futurs** : les événements `events` ou `maintenance_events` sont analysés avec `next_due_date` et `next_due_mileage`. Le workflow signale les entretiens à venir par date ou par kilométrage proche.
+5. **Création ou mise à jour des rappels** : le nœud `Créer ou mettre à jour les rappels` poste la liste normalisée vers `POST /internal/n8n/vehicle-reminders/upsert`. Chaque rappel porte une `deduplication_key` stable afin que le backend puisse faire un upsert idempotent plutôt qu'une création en doublon.
+6. **Notification si action requise** : le nœud `Action requise ?` déclenche `Notifier actions requises` uniquement si des rappels doivent être traités. La notification est envoyée au canal configuré par n8n.
+7. **Journalisation** : `Journaliser erreurs chargement` trace les erreurs API et `Journaliser résultat` trace le bilan de l'exécution.
+
+### Variables d'environnement n8n
+
+Configurer les variables suivantes côté n8n :
+
+| Variable | Description |
+| --- | --- |
+| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
+| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret` pour les appels internes. |
+| `LIFEPILOT_USER_ID` | UUID de l'utilisateur Life Pilot dont les véhicules doivent être surveillés. |
+| `LIFEPILOT_VEHICLE_LOOKAHEAD_DAYS` | Nombre de jours d'anticipation pour le contrôle technique, l'assurance et les entretiens datés. Valeur par défaut du workflow : `90`. |
+| `LIFEPILOT_VEHICLE_REMINDER_LEAD_DAYS` | Nombre de jours avant l'échéance utilisés pour positionner `reminder_date`. Valeur par défaut du workflow : `30`. |
+| `LIFEPILOT_VEHICLE_MILEAGE_LOOKAHEAD` | Marge kilométrique avant une échéance d'entretien. Valeur par défaut du workflow : `1500`. |
+| `LIFEPILOT_NOTIFICATION_CHANNEL` | Nom logique du canal cible, par exemple `email`, `telegram`, `whatsapp` ou `n8n_webhook`. Valeur par défaut : `n8n_webhook`. |
+| `LIFEPILOT_NOTIFICATION_CHANNEL_URL` | URL du canal réellement appelé par n8n lorsqu'une action véhicule est requise. |
+| `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH` | Valeur optionnelle de l'en-tête `Authorization` envoyée au canal configuré. |
+
+### Contrat API attendu
+
+Le workflow suppose des endpoints internes protégés par `X-N8N-Secret`.
+
+```http
+GET /internal/n8n/vehicles?user_id=<uuid>&include_events=true&lookahead_days=90
+X-N8N-Secret: <secret partagé>
+```
+
+Réponse acceptée, directement ou enveloppée dans `vehicles` ou `data` :
+
+```json
+{
+  "vehicles": [
+    {
+      "id": "vehicle-id",
+      "user_id": "user-id",
+      "brand": "Renault",
+      "model": "Clio",
+      "registration_masked": "AB-***-CD",
+      "technical_inspection_due_date": "2026-08-15",
+      "insurance_contract_id": "contract-id",
+      "insurance_contract": {
+        "id": "contract-id",
+        "renewal_date": "2026-09-01"
+      },
+      "mileage_current": 58500,
+      "events": [
+        {
+          "id": "event-id",
+          "title": "Vidange",
+          "next_due_date": "2026-08-01",
+          "next_due_mileage": 60000
+        }
+      ]
+    }
+  ]
+}
+```
+
+```http
+POST /internal/n8n/vehicle-reminders/upsert
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+Corps envoyé par n8n :
+
+```json
+{
+  "user_id": "user-id",
+  "generated_at": "2026-07-12T07:30:00.000Z",
+  "action_required": true,
+  "count": 1,
+  "reminders": [
+    {
+      "type": "technical_inspection",
+      "deduplication_key": "vehicle:vehicle-id:technical_inspection:2026-08-15",
+      "vehicle_id": "vehicle-id",
+      "user_id": "user-id",
+      "title": "Contrôle technique à prévoir - Renault Clio AB-***-CD",
+      "description": "Échéance contrôle technique le 2026-08-15.",
+      "due_date": "2026-08-15",
+      "reminder_date": "2026-07-16",
+      "severity": "warning",
+      "source_type": "vehicle",
+      "source_id": "vehicle-id",
+      "notification_channels": ["in_app", "email"]
+    }
+  ]
+}
+```
+
+Le backend doit créer ou mettre à jour les rappels à partir de `deduplication_key`, `source_type`, `source_id` et `type`. Les rappels déjà terminés ou explicitement ignorés ne devraient pas être rouverts sans nouvelle échéance.
+
+### Notification et idempotence
+
+La notification de fin est volontairement séparée de l'upsert des rappels : elle n'est envoyée que lorsque le payload indique `action_required` ou que le backend retourne des rappels créés ou modifiés. Les écritures doivent rester idempotentes, car n8n peut rejouer un nœud après une erreur réseau ou une relance manuelle.

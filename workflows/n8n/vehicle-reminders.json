@@ -1,0 +1,170 @@
+{
+  "name": "Life Pilot - Rappels véhicules",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 7,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "7a24a6b0-3e57-42f1-84cf-4b3b2f8a8d01",
+      "name": "Tous les jours à 07:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/vehicles' }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "user_id", "value": "={{ $env.LIFEPILOT_USER_ID }}" },
+            { "name": "include_events", "value": "true" },
+            { "name": "lookahead_days", "value": "={{ $env.LIFEPILOT_VEHICLE_LOOKAHEAD_DAYS || 90 }}" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-Secret", "value": "={{ $env.LIFEPILOT_N8N_SECRET }}" }
+          ]
+        }
+      },
+      "id": "3a1b22a1-9cc9-4ee5-bd46-6b29f541e8b2",
+      "name": "Charger les véhicules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ Boolean($json.error) }}", "value2": true }
+          ]
+        }
+      },
+      "id": "686112c4-9959-4f5f-8e6f-5863a68617e7",
+      "name": "Erreur chargement ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = Array.isArray($json) ? $json : ($json.vehicles || $json.data || []);\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst lookaheadDays = Number($env.LIFEPILOT_VEHICLE_LOOKAHEAD_DAYS || 90);\nconst warningDate = new Date(today);\nwarningDate.setDate(warningDate.getDate() + lookaheadDays);\nconst reminderLeadDays = Number($env.LIFEPILOT_VEHICLE_REMINDER_LEAD_DAYS || 30);\nfunction parseDate(value) {\n  if (!value) return null;\n  const parsed = new Date(value);\n  if (Number.isNaN(parsed.getTime())) return null;\n  parsed.setHours(0, 0, 0, 0);\n  return parsed;\n}\nfunction daysUntil(date) {\n  return Math.ceil((date.getTime() - today.getTime()) / 86400000);\n}\nfunction severityFor(date) {\n  const days = daysUntil(date);\n  if (days < 0) return 'critical';\n  if (days <= 7) return 'urgent';\n  if (days <= 30) return 'warning';\n  return 'info';\n}\nfunction reminderDateFor(date) {\n  const reminder = new Date(date);\n  reminder.setDate(reminder.getDate() - reminderLeadDays);\n  if (reminder < today) return today.toISOString().slice(0, 10);\n  return reminder.toISOString().slice(0, 10);\n}\nfunction vehicleLabel(vehicle) {\n  return [vehicle.brand, vehicle.model, vehicle.registration_masked].filter(Boolean).join(' ') || vehicle.id;\n}\nconst actions = [];\nfor (const vehicle of payload) {\n  const label = vehicleLabel(vehicle);\n  const inspectionDue = parseDate(vehicle.technical_inspection_due_date);\n  if (inspectionDue && inspectionDue <= warningDate) {\n    actions.push({\n      type: 'technical_inspection',\n      deduplication_key: `vehicle:${vehicle.id}:technical_inspection:${inspectionDue.toISOString().slice(0, 10)}`,\n      vehicle_id: vehicle.id,\n      user_id: vehicle.user_id || $env.LIFEPILOT_USER_ID,\n      title: `Contrôle technique à prévoir - ${label}`,\n      description: `Échéance contrôle technique le ${inspectionDue.toISOString().slice(0, 10)}.`,\n      due_date: inspectionDue.toISOString().slice(0, 10),\n      reminder_date: reminderDateFor(inspectionDue),\n      severity: severityFor(inspectionDue),\n      source_type: 'vehicle',\n      source_id: vehicle.id,\n      notification_channels: ['in_app', 'email']\n    });\n  }\n  const insuranceDue = parseDate(vehicle.insurance_due_date || vehicle.insurance_contract?.next_due_date || vehicle.insurance_contract?.end_date || vehicle.insurance_contract?.renewal_date);\n  if ((vehicle.insurance_contract_id || vehicle.insurance_contract) && insuranceDue && insuranceDue <= warningDate) {\n    actions.push({\n      type: 'insurance',\n      deduplication_key: `vehicle:${vehicle.id}:insurance:${insuranceDue.toISOString().slice(0, 10)}`,\n      vehicle_id: vehicle.id,\n      contract_id: vehicle.insurance_contract_id || vehicle.insurance_contract?.id,\n      user_id: vehicle.user_id || $env.LIFEPILOT_USER_ID,\n      title: `Assurance à vérifier - ${label}`,\n      description: `Échéance ou renouvellement d'assurance le ${insuranceDue.toISOString().slice(0, 10)}.`,\n      due_date: insuranceDue.toISOString().slice(0, 10),\n      reminder_date: reminderDateFor(insuranceDue),\n      severity: severityFor(insuranceDue),\n      source_type: 'vehicle',\n      source_id: vehicle.id,\n      notification_channels: ['in_app', 'email']\n    });\n  }\n  const events = vehicle.events || vehicle.maintenance_events || [];\n  for (const event of events) {\n    const nextDue = parseDate(event.next_due_date);\n    const mileageDue = event.next_due_mileage && vehicle.mileage_current && event.next_due_mileage <= vehicle.mileage_current + Number($env.LIFEPILOT_VEHICLE_MILEAGE_LOOKAHEAD || 1500);\n    if (!nextDue && !mileageDue) continue;\n    if (nextDue && nextDue > warningDate && !mileageDue) continue;\n    const dueDate = nextDue || today;\n    actions.push({\n      type: 'maintenance',\n      deduplication_key: `vehicle:${vehicle.id}:maintenance:${event.id || event.title}:${nextDue ? nextDue.toISOString().slice(0, 10) : event.next_due_mileage}`,\n      vehicle_id: vehicle.id,\n      event_id: event.id,\n      user_id: vehicle.user_id || $env.LIFEPILOT_USER_ID,\n      title: `Entretien à planifier - ${label}`,\n      description: [event.title, nextDue ? `échéance ${nextDue.toISOString().slice(0, 10)}` : null, event.next_due_mileage ? `à ${event.next_due_mileage} km` : null].filter(Boolean).join(' - '),\n      due_date: dueDate.toISOString().slice(0, 10),\n      reminder_date: reminderDateFor(dueDate),\n      severity: mileageDue && !nextDue ? 'warning' : severityFor(dueDate),\n      source_type: 'vehicle',\n      source_id: vehicle.id,\n      notification_channels: ['in_app', 'email']\n    });\n  }\n}\nreturn [{ json: { user_id: $env.LIFEPILOT_USER_ID, generated_at: new Date().toISOString(), action_required: actions.length > 0, count: actions.length, reminders: actions } }];"
+      },
+      "id": "f986fbe9-9bfb-4335-a8a1-8042fe7173b5",
+      "name": "Vérifier échéances véhicules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_API_URL + '/internal/n8n/vehicle-reminders/upsert' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-Secret", "value": "={{ $env.LIFEPILOT_N8N_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "b4a8d8cd-6e6e-4d5f-bf76-f0eb5413f8cf",
+      "name": "Créer ou mettre à jour les rappels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 80],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{ Boolean($json.action_required) || (($json.reminders || $json.created || $json.updated || []).length > 0) }}", "value2": true }
+          ]
+        }
+      },
+      "id": "8a4e63f7-a6b0-46e4-a652-4ef3cd66f7de",
+      "name": "Action requise ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1200, 80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LIFEPILOT_NOTIFICATION_CHANNEL_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Authorization", "value": "={{ $env.LIFEPILOT_NOTIFICATION_CHANNEL_AUTH || '' }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: 'lifepilot', workflow: 'vehicle-reminders', channel: $env.LIFEPILOT_NOTIFICATION_CHANNEL || 'n8n_webhook', title: 'Actions véhicules requises', count: $json.count || ($json.reminders || $json.created || $json.updated || []).length, reminders: $json.reminders || $json.created || $json.updated || [], generated_at: $json.generated_at || new Date().toISOString() }) }}"
+      },
+      "id": "bcb5536c-406a-491d-b033-a97fb6be70c1",
+      "name": "Notifier actions requises",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({ workflow: 'vehicle-reminders', step: 'load-vehicles', error: $json.error || $json, at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "6a81bec7-a036-46dc-8b61-9878e1269c16",
+      "name": "Journaliser erreurs chargement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, -120]
+    },
+    {
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({ workflow: 'vehicle-reminders', step: 'completed', action_required: Boolean($json.action_required), count: $json.count || 0, at: new Date().toISOString() }));\nreturn items;"
+      },
+      "id": "b1994f41-57b5-40a7-a163-3936e991b0fe",
+      "name": "Journaliser résultat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 180]
+    }
+  ],
+  "connections": {
+    "Tous les jours à 07:30": { "main": [[{ "node": "Charger les véhicules", "type": "main", "index": 0 }]] },
+    "Charger les véhicules": { "main": [[{ "node": "Erreur chargement ?", "type": "main", "index": 0 }]] },
+    "Erreur chargement ?": { "main": [[{ "node": "Journaliser erreurs chargement", "type": "main", "index": 0 }], [{ "node": "Vérifier échéances véhicules", "type": "main", "index": 0 }]] },
+    "Vérifier échéances véhicules": { "main": [[{ "node": "Créer ou mettre à jour les rappels", "type": "main", "index": 0 }]] },
+    "Créer ou mettre à jour les rappels": { "main": [[{ "node": "Action requise ?", "type": "main", "index": 0 }]] },
+    "Action requise ?": { "main": [[{ "node": "Notifier actions requises", "type": "main", "index": 0 }], [{ "node": "Journaliser résultat", "type": "main", "index": 0 }]] },
+    "Notifier actions requises": { "main": [[{ "node": "Journaliser résultat", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "pinData": {},
+  "versionId": "1",
+  "triggerCount": 1,
+  "tags": [
+    { "name": "lifepilot" },
+    { "name": "vehicles" },
+    { "name": "reminders" }
+  ]
+}
