@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.core.logging import log_import_job
 from app.schemas.transaction import TransactionImportItem, TransactionImportRequest
 
 
@@ -92,30 +93,46 @@ class CsvBankImporter:
         *,
         source_name: str,
     ) -> CsvBankImportParseResult:
+        log_import_job("import_job_started", "csv_bank_import", source=source_name)
         reader = csv.DictReader(rows, delimiter=self._config.delimiter)
         transactions: list[TransactionImportItem] = []
         seen: set[tuple[date, Decimal, str, str]] = set()
         duplicate_count = 0
-        for line_number, row in enumerate(reader, start=2):
-            item = self._parse_row(
-                row, line_number=line_number, source_name=source_name
+        try:
+            for line_number, row in enumerate(reader, start=2):
+                item = self._parse_row(
+                    row, line_number=line_number, source_name=source_name
+                )
+                dedup_key = (
+                    item.booking_date,
+                    item.amount,
+                    _normalize_label(item.label_raw),
+                    item.currency,
+                )
+                if dedup_key in seen:
+                    duplicate_count += 1
+                    continue
+                seen.add(dedup_key)
+                transactions.append(item)
+        except Exception as error:
+            log_import_job(
+                "import_job_failed",
+                "csv_bank_import",
+                source=source_name,
+                error_type=type(error).__name__,
             )
-            dedup_key = (
-                item.booking_date,
-                item.amount,
-                _normalize_label(item.label_raw),
-                item.currency,
-            )
-            if dedup_key in seen:
-                duplicate_count += 1
-                continue
-            seen.add(dedup_key)
-            transactions.append(item)
+            raise
+        log_import_job(
+            "import_job_completed",
+            "csv_bank_import",
+            source=source_name,
+            imported_count=len(transactions),
+            ignored_duplicates=duplicate_count,
+        )
         return CsvBankImportParseResult(
             request=TransactionImportRequest(transactions=transactions),
             ignored_duplicates=duplicate_count,
         )
-
     def _parse_row(
         self,
         row: dict[str, str | None],

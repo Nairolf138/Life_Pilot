@@ -18,6 +18,7 @@ from fastapi import (
 )
 
 from app.core.config import Settings, get_settings
+from app.core.logging import log_n8n_workflow
 from app.schemas.document import (
     DocumentExtractRequest,
     DocumentResponse,
@@ -81,6 +82,13 @@ async def ingest_n8n_document(
 ) -> InternalDocumentIngestionResponse:
     """Reçoit un PDF depuis n8n, le stocke puis déclenche l'extraction texte."""
 
+    log_n8n_workflow(
+        "n8n_workflow_triggered",
+        "gmail_document_ingestion",
+        user_id=str(user_id),
+        document_type=document_type,
+        filename=file.filename,
+    )
     uploaded = await document_service.upload_document(
         user_id,
         file=file,
@@ -89,6 +97,13 @@ async def ingest_n8n_document(
     )
     extracted = await document_service.extract_document(
         user_id, uploaded.document.id, DocumentExtractRequest()
+    )
+    log_n8n_workflow(
+        "n8n_workflow_completed",
+        "gmail_document_ingestion",
+        user_id=str(user_id),
+        document_id=str(uploaded.document.id),
+        duplicate=uploaded.duplicate,
     )
     return InternalDocumentIngestionResponse(
         document=uploaded.document,
