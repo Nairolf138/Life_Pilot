@@ -1,180 +1,63 @@
 # Workflows n8n
 
-## Gmail ingestion
+Ce document décrit les workflows n8n Life Pilot. n8n orchestre les déclenchements, intégrations externes et notifications ; l'API backend reste la source de vérité pour les règles métier, l'idempotence et la persistance.
 
-Le workflow `workflows/n8n/gmail-ingestion.json` automatise l'ingestion de PDF reçus par Gmail vers l'API Life Pilot.
+## Variables et principes communs
 
-### Déclenchement
-
-- Planification recommandée : toutes les 3 heures en heures ouvrées, ou toutes les 6 heures pour un usage moins fréquent.
-- La requête Gmail doit filtrer les nouveaux messages pertinents avec pièces jointes PDF, par exemple :
-  `newer_than:7d has:attachment filename:pdf (facture OR invoice OR reçu OR receipt OR contrat OR échéance)`.
-
-### Credentials Gmail attendus
-
-Créer dans n8n un credential **Gmail OAuth2** nommé `Gmail Life Pilot` avec les droits suivants :
-
-- accès en lecture aux messages Gmail ;
-- accès aux métadonnées des messages ;
-- accès au téléchargement des pièces jointes.
-
-Scopes Google recommandés :
-
-- `https://www.googleapis.com/auth/gmail.readonly`
-- `https://www.googleapis.com/auth/gmail.metadata`
-
-Le compte Gmail connecté doit être celui dont les documents doivent être ingérés. Le workflow ne supprime pas les emails et ne modifie pas leur contenu.
-
-### Variables d'environnement n8n
-
-Configurer les variables suivantes côté n8n :
-
-| Variable | Description |
+| Élément | Règle commune |
 | --- | --- |
-| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
-| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret`. |
-| `LIFEPILOT_USER_ID` | UUID de l'utilisateur Life Pilot propriétaire des documents importés. |
+| Secret interne | Tous les endpoints `/internal/n8n/*` sont appelés avec `X-N8N-Secret: {{$env.LIFEPILOT_N8N_SECRET}}`. La même valeur doit être configurée côté API dans `N8N_INTERNAL_SECRET`. |
+| URL backend | `LIFEPILOT_API_URL` contient l'URL de base de l'API, sans slash final. |
+| Utilisateur cible | Les workflows mono-utilisateur utilisent `LIFEPILOT_USER_ID`. Les workflows multi-utilisateurs doivent itérer sur une liste backend ou une variable dédiée et ne jamais deviner l'utilisateur depuis des données externes. |
+| Idempotence | Chaque écriture doit porter une clé stable (`idempotency_key`, `external_id`, `deduplication_key`, période fiscale, identifiant Gmail ou identifiant de récurrence). |
+| Logs | Les nœuds de journalisation n8n doivent émettre un objet JSON avec `workflow`, `step`, `message`, `user_id` si disponible et `at`. En production, relayer ces logs vers l'observabilité ou une alerte opérée. |
 
-### Configuration backend
+## `bank-sync`
 
-L'API expose un endpoint interne :
+### Déclencheur
+
+- Déclenchement planifié toutes les 6 heures pour les comptes actifs.
+- Déclenchement manuel possible après ajout d'un compte bancaire ou renouvellement de consentement Open Banking.
+- Option recommandée : exécuter une synchronisation complète de rattrapage une fois par nuit et des synchronisations incrémentales en journée.
+
+### Entrées
+
+- `LIFEPILOT_API_URL` : URL de base de l'API.
+- `LIFEPILOT_N8N_SECRET` : secret interne n8n.
+- `LIFEPILOT_USER_ID` ou liste d'utilisateurs à synchroniser.
+- Identifiants de comptes à synchroniser, si le backend ne les résout pas automatiquement.
+- Fenêtre temporelle : `from_date`, `to_date`, `lookback_days` ou curseur de synchronisation.
+- Réponse du connecteur bancaire : comptes, soldes, transactions, statut du consentement, curseur de pagination.
+
+### Étapes
+
+1. Charger les comptes bancaires synchronisables pour l'utilisateur ou le lot d'utilisateurs.
+2. Vérifier que chaque compte dispose d'un consentement valide et non expiré.
+3. Appeler le fournisseur Open Banking avec le curseur ou la fenêtre de dates.
+4. Normaliser les comptes, soldes et transactions : devise, libellé brut, libellé nettoyé, date de valeur, montant signé, identifiant externe.
+5. Envoyer les transactions au backend par lots idempotents.
+6. Déclencher la catégorisation, la détection de virements internes et la détection de récurrences.
+7. Mettre à jour le curseur de synchronisation et le statut du consentement.
+8. Journaliser le nombre de comptes et transactions importés, ignorés ou en erreur.
+
+### Endpoints backend appelés
 
 ```http
-POST /internal/n8n/documents
-X-N8N-Secret: <secret partagé>
-Content-Type: multipart/form-data
-```
-
-Champs multipart attendus :
-
-- `file` : PDF téléchargé depuis Gmail ;
-- `user_id` : UUID utilisateur Life Pilot ;
-- `document_type` : classification simple calculée par n8n ;
-- `title` : sujet de l'email ou nom de la pièce jointe.
-
-Le backend doit définir `N8N_INTERNAL_SECRET` avec la même valeur que `LIFEPILOT_N8N_SECRET`. Si ce secret n'est pas configuré, l'endpoint interne refuse les ingestions.
-
-### Journalisation des erreurs
-
-Le workflow contient une branche d'erreur qui journalise le nom du workflow, l'étape, le message d'erreur et l'horodatage. En production, remplacer le nœud de log par une destination opérée : Slack, email d'alerte, base d'audit ou outil d'observabilité.
-
-## Notifications quotidiennes
-
-Le workflow `workflows/n8n/notifications.json` orchestre l'envoi quotidien des notifications Life Pilot. Il sert de couche d'automatisation entre l'API interne, qui sélectionne les notifications à remettre, et le canal de diffusion configuré dans n8n.
-
-### Déclenchement
-
-- Le nœud **Tous les jours à 08:00** exécute le workflow une fois par jour.
-- L'heure peut être adaptée dans n8n selon le fuseau cible et les préférences produit, par exemple 07:30 pour un digest matinal.
-
-### Étapes du workflow
-
-1. **Récupération des candidates** : le nœud HTTP `Récupérer les notifications candidates` appelle l'API interne `GET /internal/n8n/notifications/candidates` avec `mark_as_sent=false` afin de ne pas marquer une notification comme envoyée avant confirmation du canal.
-2. **Regroupement par priorité** : le nœud Code `Regrouper par priorité` accepte une réponse sous forme de tableau ou enveloppée dans `candidates`, `notifications` ou `data`. Il produit un item par priorité (`critical`, `urgent`, `warning`, `info`) trié de la priorité la plus élevée à la plus faible.
-3. **Envoi via canal configuré** : le nœud `Envoyer via canal configuré` poste chaque groupe vers l'URL fournie par `LIFEPILOT_NOTIFICATION_CHANNEL_URL`. Le payload contient la source, le canal logique, la priorité, le nombre de notifications et la liste des notifications.
-4. **Retour backend** : après un envoi sans erreur n8n, le nœud `Marquer les notifications envoyées` appelle `POST /internal/n8n/notifications/mark-sent` avec les identifiants du groupe, le canal et l'horodatage d'envoi.
-5. **Gestion des erreurs** : deux branches journalisent séparément les erreurs de récupération des candidates et les erreurs du canal. Une erreur de canal ne déclenche pas le marquage comme envoyé, ce qui permet une nouvelle tentative lors d'une exécution ultérieure.
-
-### Variables d'environnement n8n
-
-Configurer les variables suivantes côté n8n :
-
-| Variable | Description |
-| --- | --- |
-| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
-| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret` pour les appels internes. |
-| `LIFEPILOT_NOTIFICATIONS_LIMIT` | Nombre maximal de candidates récupérées par exécution. Valeur par défaut du workflow : `100`. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL` | Nom logique du canal cible, par exemple `email`, `telegram`, `whatsapp` ou `n8n_webhook`. Valeur par défaut : `n8n_webhook`. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL_URL` | URL du canal réellement appelé par n8n : webhook, passerelle email, bot Telegram, passerelle WhatsApp ou service interne. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH` | Valeur optionnelle de l'en-tête `Authorization` envoyée au canal configuré. |
-
-### Contrat API attendu
-
-Le workflow attend les endpoints internes suivants, protégés par `X-N8N-Secret` :
-
-```http
-GET /internal/n8n/notifications/candidates?limit=100&mark_as_sent=false
+GET /internal/n8n/bank/accounts?user_id=<uuid>&syncable=true
 X-N8N-Secret: <secret partagé>
 ```
 
-Réponse acceptée :
-
-```json
-{
-  "candidates": [
-    {
-      "id": "notification-or-reminder-id",
-      "reminder_id": "optional-reminder-id",
-      "user_id": "user-id",
-      "title": "Titre",
-      "description": "Message à envoyer",
-      "severity": "urgent",
-      "priority": "urgent",
-      "channels": ["email"],
-      "deduplication_key": "reminder:..."
-    }
-  ]
-}
-```
-
-Le workflow accepte aussi un tableau JSON direct. Chaque notification doit fournir `id` ou `reminder_id` afin de pouvoir être marquée comme envoyée.
-
 ```http
-POST /internal/n8n/notifications/mark-sent
+POST /internal/n8n/bank/transactions/import
 X-N8N-Secret: <secret partagé>
 Content-Type: application/json
 ```
 
-Corps envoyé par n8n :
-
-```json
-{
-  "notification_ids": ["notification-or-reminder-id"],
-  "priority": "urgent",
-  "channel": "email",
-  "sent_at": "2026-07-11T08:00:00.000Z"
-}
+```http
+POST /internal/n8n/bank/sync-state
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
 ```
-
-Le backend doit seulement marquer comme envoyées les notifications listées lorsque le canal a accepté le groupe. En cas d'échec réseau ou applicatif sur le canal, le workflow journalise l'erreur et n'appelle pas l'endpoint de marquage.
-
-### Journalisation des erreurs de canal
-
-Le nœud `Journaliser erreurs de canal` écrit un objet JSON dans les logs n8n avec le workflow, l'étape, le message d'erreur, la priorité et les identifiants concernés. En production, ce nœud peut être remplacé ou complété par une alerte Slack, email d'astreinte, entrée d'audit ou intégration d'observabilité.
-
-## Surveillance hebdomadaire des abonnements
-
-Le workflow `workflows/n8n/subscription-monitor.json` automatise la surveillance des prélèvements récurrents afin de transformer les récurrences détectées en contrats suivis et en alertes actionnables.
-
-### Déclenchement
-
-- Le nœud **Chaque lundi à 06:00** exécute le workflow une fois par semaine.
-- La fréquence peut être adaptée dans n8n si l'analyse bancaire est plus ou moins coûteuse, mais une cadence hebdomadaire limite le bruit tout en détectant rapidement les nouveaux abonnements et les hausses de prix.
-
-### Étapes du workflow
-
-1. **Lancement ou récupération de l'analyse** : le nœud HTTP `Lancer ou récupérer l'analyse` appelle `POST /internal/n8n/recurrences/analyze` avec l'utilisateur cible, une fenêtre d'analyse et une clé d'idempotence hebdomadaire. Le mode `launch_or_get` permet au backend de lancer une analyse si nécessaire ou de renvoyer un résultat déjà calculé pour la même période.
-2. **Détection des nouveaux abonnements** : le nœud Code `Normaliser récurrences` transforme les détections en items n8n homogènes et marque `is_new_subscription` lorsque le backend signale un nouveau prélèvement récurrent ou une récurrence sans contrat associé.
-3. **Détection des variations de prix** : le même nœud expose `has_price_variation` lorsque les alertes de l'analyse contiennent une hausse de prix. Le nœud `Variations de prix ?` isole ensuite ces cas pour déclencher un rappel ou une notification.
-4. **Création ou mise à jour des contrats** : le nœud `Créer ou mettre à jour les contrats` appelle `POST /internal/n8n/contracts/upsert-from-recurrence` pour créer un contrat `to_review` ou mettre à jour un contrat existant à partir de la suggestion de récurrence.
-5. **Création de rappels ou notifications** : le nœud `Créer rappels ou notifications` appelle `POST /internal/n8n/subscription-monitor/reminders` pour créer les rappels, notifications in-app ou alertes de validation nécessaires, notamment en cas de hausse de prix.
-6. **Journalisation** : les nœuds `Journaliser erreurs analyse` et `Journaliser résultat` consignent les erreurs d'analyse et le statut des écritures effectuées par le workflow.
-
-### Variables d'environnement n8n
-
-Configurer les variables suivantes côté n8n :
-
-| Variable | Description |
-| --- | --- |
-| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
-| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret` pour les appels internes. |
-| `LIFEPILOT_USER_ID` | UUID de l'utilisateur Life Pilot dont les transactions doivent être analysées. |
-| `LIFEPILOT_SUBSCRIPTION_LOOKBACK_DAYS` | Nombre de jours d'historique bancaire analysés. Valeur par défaut du workflow : `400`. |
-| `LIFEPILOT_SUBSCRIPTION_ANALYSIS_MODE` | Mode d'analyse envoyé au backend. Valeur par défaut : `launch_or_get`. |
-
-### Contrat API attendu
-
-Le workflow suppose des endpoints internes protégés par `X-N8N-Secret`.
 
 ```http
 POST /internal/n8n/recurrences/analyze
@@ -182,54 +65,130 @@ X-N8N-Secret: <secret partagé>
 Content-Type: application/json
 ```
 
-Corps envoyé par n8n :
+### Credentials nécessaires
 
-```json
-{
-  "user_id": "user-id",
-  "lookback_days": 400,
-  "create_alerts": false,
-  "idempotency_key": "subscription-monitor:2026-07-12",
-  "mode": "launch_or_get"
-}
+- Credential n8n du fournisseur bancaire ou Open Banking : OAuth2, API key ou certificat selon l'agrégateur.
+- `LIFEPILOT_N8N_SECRET` pour les endpoints internes.
+- Secret ou token de chiffrement du connecteur si le fournisseur impose une signature des requêtes.
+- Accès réseau sortant de n8n vers l'API Life Pilot et le fournisseur bancaire.
+
+### Erreurs possibles
+
+- Consentement expiré, révoqué ou nécessitant une authentification forte.
+- Limite de débit du fournisseur bancaire.
+- Pagination incomplète ou curseur invalide.
+- Transaction sans identifiant externe stable.
+- Échec de validation backend : devise inconnue, compte non trouvé, utilisateur non autorisé.
+- Erreur temporaire API, réseau ou base de données.
+
+### Stratégie de retry
+
+- Réessayer les erreurs réseau, `429`, `502`, `503` et `504` avec backoff exponentiel : 1 min, 5 min, 15 min, puis prochaine planification.
+- Ne pas réessayer automatiquement les erreurs `401`, `403` ou consentement expiré ; créer une notification de reconnexion bancaire.
+- Réimporter les lots avec les mêmes identifiants externes et la même clé d'idempotence pour permettre un upsert sans doublon.
+- Après échec partiel, reprendre au dernier curseur confirmé par le backend, jamais au curseur reçu mais non persisté.
+
+### Règles de sécurité
+
+- Ne jamais stocker de token bancaire dans des nœuds Code ou dans le payload backend ; utiliser les credentials chiffrés n8n.
+- Masquer les IBAN, numéros de compte et libellés sensibles dans les logs.
+- Vérifier que `user_id` et comptes retournés appartiennent au même tenant.
+- Transmettre uniquement les champs nécessaires au backend ; éviter de conserver les réponses brutes du fournisseur hors stockage sécurisé.
+- Rotation régulière des secrets Open Banking et du secret interne n8n.
+
+## `gmail-ingestion`
+
+### Déclencheur
+
+- Le workflow `workflows/n8n/gmail-ingestion.json` est planifié toutes les 4 heures.
+- La requête Gmail cible les PDF récents : `newer_than:7d has:attachment filename:pdf (facture OR invoice OR reçu OR receipt OR contrat OR échéance)`.
+
+### Entrées
+
+- Messages Gmail avec métadonnées (`id`, `subject`, `from`, pièces jointes).
+- Pièces jointes PDF téléchargées dans la propriété binaire `document`.
+- `LIFEPILOT_API_URL`, `LIFEPILOT_N8N_SECRET`, `LIFEPILOT_USER_ID`.
+- Classification simple déduite du sujet et de l'expéditeur : `invoice`, `receipt`, `contract`, `notice` ou `email_pdf`.
+
+### Étapes
+
+1. Rechercher les emails pertinents avec pièces jointes PDF.
+2. Classifier le sujet et l'expéditeur pour produire `document_type` et `title`.
+3. Ignorer les emails sans PDF.
+4. Télécharger chaque PDF détecté.
+5. Envoyer le PDF au backend en `multipart/form-data`.
+6. Laisser le backend stocker le document, détecter les doublons et déclencher l'extraction texte.
+7. Journaliser les erreurs par email et par pièce jointe.
+
+### Endpoints backend appelés
+
+```http
+POST /internal/n8n/documents
+X-N8N-Secret: <secret partagé>
+Content-Type: multipart/form-data
 ```
 
-Réponse attendue, directement ou enveloppée dans `report`, `analysis` ou `data` :
+Champs : `file`, `user_id`, `document_type`, `title`.
 
-```json
-{
-  "analysis_id": "analysis-id",
-  "user_id": "user-id",
-  "detections": [
-    {
-      "key": "account:category:merchant:monthly",
-      "period": "monthly",
-      "merchant_or_label": "netflix",
-      "average_amount": "13.49",
-      "currency": "EUR",
-      "first_seen_at": "2026-01-10",
-      "last_seen_at": "2026-07-10",
-      "transaction_ids": ["transaction-id"],
-      "contract": {
-        "provider": "Netflix",
-        "name": "Netflix",
-        "contract_type": "other",
-        "payment_frequency": "monthly",
-        "monthly_cost": "13.49",
-        "yearly_cost": "161.88",
-        "contract_id": null,
-        "should_create": true
-      },
-      "alerts": [
-        {
-          "alert_type": "subscription_without_contract",
-          "title": "Abonnement sans contrat associé : netflix",
-          "severity": "warning"
-        }
-      ]
-    }
-  ]
-}
+### Credentials nécessaires
+
+- Credential n8n **Gmail OAuth2** nommé `Gmail Life Pilot`.
+- Scopes recommandés : `https://www.googleapis.com/auth/gmail.readonly` et `https://www.googleapis.com/auth/gmail.metadata`.
+- `LIFEPILOT_N8N_SECRET` pour l'appel backend.
+
+### Erreurs possibles
+
+- OAuth Gmail expiré ou révoqué.
+- Quota Gmail dépassé.
+- Pièce jointe absente, non PDF ou trop volumineuse.
+- Téléchargement binaire incomplet.
+- Secret n8n invalide, backend indisponible ou extraction OCR en échec.
+- Document déjà importé.
+
+### Stratégie de retry
+
+- Les nœuds de téléchargement et d'envoi utilisent `continueOnFail` pour journaliser sans bloquer tout le lot.
+- Réessayer automatiquement les erreurs réseau et `5xx` avec backoff court.
+- Ne pas réessayer les pièces jointes non PDF ou les erreurs d'autorisation sans action utilisateur.
+- Le backend doit dédupliquer par hash de fichier, identifiant Gmail ou métadonnées stables afin que les retries restent sûrs.
+
+### Règles de sécurité
+
+- Utiliser un accès Gmail en lecture seule ; ne pas supprimer ni modifier les emails.
+- Ne pas loguer le contenu des emails ni les PDF, uniquement les identifiants techniques et messages d'erreur résumés.
+- Refuser les fichiers non PDF et appliquer une limite de taille côté backend.
+- Vérifier le secret interne et l'appartenance du document à `LIFEPILOT_USER_ID`.
+
+## `subscription-monitor`
+
+### Déclencheur
+
+- Le workflow `workflows/n8n/subscription-monitor.json` s'exécute chaque lundi à 06:00.
+- Il peut être relancé manuellement après une importation bancaire massive.
+
+### Entrées
+
+- `LIFEPILOT_USER_ID`.
+- `LIFEPILOT_SUBSCRIPTION_LOOKBACK_DAYS`, valeur par défaut `400`.
+- `LIFEPILOT_SUBSCRIPTION_ANALYSIS_MODE`, valeur par défaut `launch_or_get`.
+- Rapport backend de récurrences : détections, alertes, contrat suggéré, transactions sources.
+
+### Étapes
+
+1. Appeler l'analyse des récurrences avec une clé `subscription-monitor:<date ISO>`.
+2. Normaliser les détections depuis `report`, `analysis`, `data` ou un tableau direct.
+3. Identifier les nouveaux abonnements sans contrat rattaché.
+4. Identifier les variations de prix et alertes associées.
+5. Créer ou mettre à jour les contrats en statut `to_review`.
+6. Créer les rappels ou notifications de validation.
+7. Journaliser le résultat de chaque écriture.
+
+### Endpoints backend appelés
+
+```http
+POST /internal/n8n/recurrences/analyze
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
 ```
 
 ```http
@@ -238,93 +197,72 @@ X-N8N-Secret: <secret partagé>
 Content-Type: application/json
 ```
 
-Le payload contient la clé de récurrence, le fournisseur, le nom du contrat, la fréquence, les coûts estimés et les transactions sources. Le backend doit créer un contrat `to_review` si aucun contrat compatible n'existe, ou mettre à jour le coût et les métadonnées de suivi si un contrat est déjà rattaché.
-
 ```http
 POST /internal/n8n/subscription-monitor/reminders
 X-N8N-Secret: <secret partagé>
 Content-Type: application/json
 ```
 
-Le payload contient la clé de récurrence, les alertes associées, les transactions sources et `notify: true`. Le backend doit créer uniquement les rappels ou notifications utiles et éviter les doublons grâce à la clé de récurrence et aux types d'alertes.
+### Credentials nécessaires
 
-### Journalisation et idempotence
+- `LIFEPILOT_N8N_SECRET` pour les endpoints internes.
+- Accès aux variables `LIFEPILOT_API_URL`, `LIFEPILOT_USER_ID` et paramètres de lookback.
+- Aucun credential bancaire direct si les transactions sont déjà importées par `bank-sync`.
 
-La clé `subscription-monitor:<date ISO>` évite de relancer plusieurs fois la même analyse hebdomadaire si le workflow est rejoué. Les écritures backend doivent rester idempotentes côté contrats et rappels, car n8n peut réessayer un nœud après une erreur réseau.
+### Erreurs possibles
 
-## Rappels véhicules quotidiens
+- Aucune transaction disponible ou historique insuffisant.
+- Analyse déjà en cours pour la même clé d'idempotence.
+- Détection sans marchand, montant ou période exploitable.
+- Conflit avec un contrat existant rattaché manuellement.
+- Échec de création des rappels ou contrat déjà fermé.
 
-Le workflow `workflows/n8n/vehicle-reminders.json` automatise la surveillance des échéances liées aux véhicules afin de créer ou mettre à jour les rappels Life Pilot avant qu'une action ne soit urgente.
+### Stratégie de retry
 
-### Déclenchement
+- Réessayer les erreurs temporaires du backend avec la même clé `subscription-monitor:<date ISO>`.
+- Laisser le backend retourner un résultat existant en mode `launch_or_get` plutôt que créer une analyse concurrente.
+- Ne pas créer de rappel en doublon : utiliser la clé de récurrence et le type d'alerte comme clé de déduplication.
+- Isoler les erreurs par détection pour continuer à traiter les autres abonnements.
 
-- Le nœud **Tous les jours à 07:30** exécute le workflow une fois par jour.
-- L'horaire peut être ajusté selon le fuseau de l'utilisateur, par exemple avant le digest de notifications quotidiennes pour que les nouveaux rappels soient inclus dans la tournée du matin.
+### Règles de sécurité
 
-### Étapes du workflow
+- Ne pas exposer les libellés bancaires complets dans les notifications externes ; préférer marchand, montant et période.
+- Les contrats créés automatiquement restent `to_review` jusqu'à validation utilisateur.
+- Ne jamais supprimer ou résilier un contrat depuis n8n.
+- Restreindre les endpoints à `X-N8N-Secret` et contrôler l'appartenance de chaque transaction à l'utilisateur.
 
-1. **Chargement des véhicules** : le nœud HTTP `Charger les véhicules` appelle `GET /internal/n8n/vehicles` avec l'utilisateur cible, les événements d'entretien et une fenêtre de projection.
-2. **Vérification du contrôle technique** : le nœud Code `Vérifier échéances véhicules` lit `technical_inspection_due_date` et génère une action lorsque l'échéance est dépassée ou comprise dans la fenêtre configurée.
-3. **Vérification de l'assurance** : le même nœud inspecte le contrat d'assurance rattaché au véhicule via `insurance_contract_id` ou l'objet `insurance_contract`, puis surveille `insurance_due_date`, `next_due_date`, `end_date` ou `renewal_date` selon les données exposées par le backend.
-4. **Vérification des entretiens futurs** : les événements `events` ou `maintenance_events` sont analysés avec `next_due_date` et `next_due_mileage`. Le workflow signale les entretiens à venir par date ou par kilométrage proche.
-5. **Création ou mise à jour des rappels** : le nœud `Créer ou mettre à jour les rappels` poste la liste normalisée vers `POST /internal/n8n/vehicle-reminders/upsert`. Chaque rappel porte une `deduplication_key` stable afin que le backend puisse faire un upsert idempotent plutôt qu'une création en doublon.
-6. **Notification si action requise** : le nœud `Action requise ?` déclenche `Notifier actions requises` uniquement si des rappels doivent être traités. La notification est envoyée au canal configuré par n8n.
-7. **Journalisation** : `Journaliser erreurs chargement` trace les erreurs API et `Journaliser résultat` trace le bilan de l'exécution.
+## `vehicle-reminders`
 
-### Variables d'environnement n8n
+### Déclencheur
 
-Configurer les variables suivantes côté n8n :
+- Le workflow `workflows/n8n/vehicle-reminders.json` s'exécute tous les jours à 07:30.
+- L'horaire peut être positionné avant `notifications` pour inclure les nouveaux rappels dans le digest quotidien.
 
-| Variable | Description |
-| --- | --- |
-| `LIFEPILOT_API_URL` | URL de base de l'API, par exemple `https://api.example.com`. |
-| `LIFEPILOT_N8N_SECRET` | Secret partagé envoyé dans l'en-tête `X-N8N-Secret` pour les appels internes. |
-| `LIFEPILOT_USER_ID` | UUID de l'utilisateur Life Pilot dont les véhicules doivent être surveillés. |
-| `LIFEPILOT_VEHICLE_LOOKAHEAD_DAYS` | Nombre de jours d'anticipation pour le contrôle technique, l'assurance et les entretiens datés. Valeur par défaut du workflow : `90`. |
-| `LIFEPILOT_VEHICLE_REMINDER_LEAD_DAYS` | Nombre de jours avant l'échéance utilisés pour positionner `reminder_date`. Valeur par défaut du workflow : `30`. |
-| `LIFEPILOT_VEHICLE_MILEAGE_LOOKAHEAD` | Marge kilométrique avant une échéance d'entretien. Valeur par défaut du workflow : `1500`. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL` | Nom logique du canal cible, par exemple `email`, `telegram`, `whatsapp` ou `n8n_webhook`. Valeur par défaut : `n8n_webhook`. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL_URL` | URL du canal réellement appelé par n8n lorsqu'une action véhicule est requise. |
-| `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH` | Valeur optionnelle de l'en-tête `Authorization` envoyée au canal configuré. |
+### Entrées
 
-### Contrat API attendu
+- `LIFEPILOT_USER_ID`.
+- `LIFEPILOT_VEHICLE_LOOKAHEAD_DAYS`, valeur par défaut `90`.
+- `LIFEPILOT_VEHICLE_REMINDER_LEAD_DAYS`, valeur par défaut `30`.
+- `LIFEPILOT_VEHICLE_MILEAGE_LOOKAHEAD`, valeur par défaut `1500`.
+- Véhicules, contrat d'assurance rattaché et événements d'entretien.
+- Canal de notification optionnel : `LIFEPILOT_NOTIFICATION_CHANNEL_URL`, `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH`.
 
-Le workflow suppose des endpoints internes protégés par `X-N8N-Secret`.
+### Étapes
+
+1. Charger les véhicules avec événements et fenêtre de projection.
+2. Vérifier `technical_inspection_due_date`.
+3. Vérifier les échéances d'assurance depuis le véhicule ou le contrat associé.
+4. Vérifier les entretiens par date ou kilométrage.
+5. Générer des rappels normalisés avec `deduplication_key` stable.
+6. Upserter les rappels dans le backend.
+7. Notifier le canal configuré uniquement si une action est requise.
+8. Journaliser chargement, upsert et notification.
+
+### Endpoints backend appelés
 
 ```http
 GET /internal/n8n/vehicles?user_id=<uuid>&include_events=true&lookahead_days=90
 X-N8N-Secret: <secret partagé>
-```
-
-Réponse acceptée, directement ou enveloppée dans `vehicles` ou `data` :
-
-```json
-{
-  "vehicles": [
-    {
-      "id": "vehicle-id",
-      "user_id": "user-id",
-      "brand": "Renault",
-      "model": "Clio",
-      "registration_masked": "AB-***-CD",
-      "technical_inspection_due_date": "2026-08-15",
-      "insurance_contract_id": "contract-id",
-      "insurance_contract": {
-        "id": "contract-id",
-        "renewal_date": "2026-09-01"
-      },
-      "mileage_current": 58500,
-      "events": [
-        {
-          "id": "event-id",
-          "title": "Vidange",
-          "next_due_date": "2026-08-01",
-          "next_due_mileage": 60000
-        }
-      ]
-    }
-  ]
-}
 ```
 
 ```http
@@ -333,35 +271,187 @@ X-N8N-Secret: <secret partagé>
 Content-Type: application/json
 ```
 
-Corps envoyé par n8n :
-
-```json
-{
-  "user_id": "user-id",
-  "generated_at": "2026-07-12T07:30:00.000Z",
-  "action_required": true,
-  "count": 1,
-  "reminders": [
-    {
-      "type": "technical_inspection",
-      "deduplication_key": "vehicle:vehicle-id:technical_inspection:2026-08-15",
-      "vehicle_id": "vehicle-id",
-      "user_id": "user-id",
-      "title": "Contrôle technique à prévoir - Renault Clio AB-***-CD",
-      "description": "Échéance contrôle technique le 2026-08-15.",
-      "due_date": "2026-08-15",
-      "reminder_date": "2026-07-16",
-      "severity": "warning",
-      "source_type": "vehicle",
-      "source_id": "vehicle-id",
-      "notification_channels": ["in_app", "email"]
-    }
-  ]
-}
+```http
+POST <LIFEPILOT_NOTIFICATION_CHANNEL_URL>
+Authorization: <optionnel>
+Content-Type: application/json
 ```
 
-Le backend doit créer ou mettre à jour les rappels à partir de `deduplication_key`, `source_type`, `source_id` et `type`. Les rappels déjà terminés ou explicitement ignorés ne devraient pas être rouverts sans nouvelle échéance.
+### Credentials nécessaires
 
-### Notification et idempotence
+- `LIFEPILOT_N8N_SECRET` pour l'API interne.
+- Token ou secret du canal de notification si une notification externe est utilisée.
+- Aucun credential constructeur ou assurance n'est requis si les données véhicule sont déjà dans Life Pilot.
 
-La notification de fin est volontairement séparée de l'upsert des rappels : elle n'est envoyée que lorsque le payload indique `action_required` ou que le backend retourne des rappels créés ou modifiés. Les écritures doivent rester idempotentes, car n8n peut rejouer un nœud après une erreur réseau ou une relance manuelle.
+### Erreurs possibles
+
+- Véhicule sans date d'échéance exploitable.
+- Date invalide ou kilométrage manquant.
+- Contrat d'assurance non rattaché ou supprimé.
+- Upsert backend en échec.
+- Canal de notification indisponible.
+
+### Stratégie de retry
+
+- Réessayer le chargement et l'upsert sur erreurs temporaires.
+- Ne pas dupliquer les rappels grâce à `deduplication_key`.
+- Ne pas rouvrir automatiquement un rappel terminé ou ignoré sauf si l'échéance change.
+- Si la notification échoue après upsert, laisser le workflow `notifications` prendre le relais lors de son prochain passage.
+
+### Règles de sécurité
+
+- Masquer l'immatriculation dans les logs et notifications, par exemple `AB-***-CD`.
+- Ne pas exposer d'adresse, certificat d'assurance ou document véhicule dans le canal externe.
+- Contrôler que les véhicules chargés appartiennent à `LIFEPILOT_USER_ID`.
+- Limiter les notifications externes au minimum actionnable : type d'échéance, date, sévérité.
+
+## `fiscal-year-prep`
+
+### Déclencheur
+
+- Déclenchement planifié annuel, recommandé le 1er janvier et un rappel mensuel jusqu'à clôture de l'année fiscale.
+- Déclenchement manuel possible depuis l'administration ou le tableau de bord fiscal.
+- Déclenchement complémentaire après import massif de documents ou transactions de l'année concernée.
+
+### Entrées
+
+- `LIFEPILOT_USER_ID`.
+- Année fiscale cible : `tax_year` ou `LIFEPILOT_TAX_YEAR`.
+- Pays ou régime fiscal si nécessaire : `country`, `tax_profile_id`.
+- Transactions de l'année, documents rattachés, contrats, revenus, dépenses déductibles, justificatifs manquants.
+- Paramètres de notification pour relancer l'utilisateur si des pièces sont manquantes.
+
+### Étapes
+
+1. Créer ou récupérer le dossier fiscal de l'année cible.
+2. Lancer l'analyse des transactions et documents de l'année.
+3. Classer les revenus, dépenses récurrentes, frais, dons, intérêts, dividendes et documents administratifs.
+4. Comparer les exigences documentaires aux justificatifs déjà présents.
+5. Créer une checklist de pièces manquantes et tâches utilisateur.
+6. Préparer un résumé fiscal et un export de travail.
+7. Notifier l'utilisateur uniquement si des actions sont requises.
+8. Marquer le dossier comme `preparing`, `ready_for_review` ou `missing_documents` selon le résultat backend.
+
+### Endpoints backend appelés
+
+```http
+POST /internal/n8n/tax-year-files/upsert
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+```http
+POST /internal/n8n/tax-year-files/analyze
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+```http
+POST /internal/n8n/tax-year-files/document-requirements
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+```http
+POST /internal/n8n/tax-year-files/notifications
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+### Credentials nécessaires
+
+- `LIFEPILOT_N8N_SECRET` pour les endpoints internes.
+- Accès au canal de notification si les relances sortent de Life Pilot.
+- Aucun credential fiscal externe par défaut ; toute connexion à un portail fiscal doit utiliser OAuth ou coffre de secrets n8n, jamais des identifiants en clair.
+
+### Erreurs possibles
+
+- Année fiscale absente ou incohérente avec les dates de transactions.
+- Documents manquants ou non extraits par OCR.
+- Catégorie fiscale ambiguë nécessitant une validation utilisateur.
+- Export fiscal impossible car le dossier est incomplet.
+- Incohérence entre transactions et justificatifs rattachés.
+
+### Stratégie de retry
+
+- Utiliser une clé d'idempotence `fiscal-year-prep:<user_id>:<tax_year>`.
+- Réessayer les analyses et exports sur erreurs temporaires.
+- Ne pas recréer les tâches existantes ; upsert par `tax_year`, `requirement_code` et `document_type`.
+- En cas de documents non extraits, relancer l'OCR une fois puis classer en action utilisateur si l'échec persiste.
+
+### Règles de sécurité
+
+- Les données fiscales sont hautement sensibles : ne jamais les loguer en clair.
+- Restreindre les exports à des emplacements chiffrés et à durée de vie limitée.
+- Ne pas envoyer de montants détaillés ou documents dans des canaux externes non chiffrés.
+- Exiger une validation utilisateur avant toute déclaration, suppression ou transmission à un tiers.
+
+## `notifications`
+
+### Déclencheur
+
+- Le workflow `workflows/n8n/notifications.json` s'exécute tous les jours à 08:00.
+- Il peut être déclenché manuellement après création en masse de rappels.
+
+### Entrées
+
+- `LIFEPILOT_NOTIFICATIONS_LIMIT`, valeur par défaut `100`.
+- Notifications candidates retournées par le backend, sous forme de tableau direct ou enveloppées dans `candidates`, `notifications` ou `data`.
+- Priorités `critical`, `urgent`, `warning`, `info`.
+- Canal cible : `LIFEPILOT_NOTIFICATION_CHANNEL`, `LIFEPILOT_NOTIFICATION_CHANNEL_URL`, `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH`.
+
+### Étapes
+
+1. Récupérer les notifications candidates avec `mark_as_sent=false`.
+2. Journaliser et arrêter la branche en cas d'erreur de récupération.
+3. Regrouper les notifications par priorité et trier les groupes.
+4. Envoyer chaque groupe vers le canal configuré.
+5. Si le canal accepte le groupe, marquer uniquement ces notifications comme envoyées.
+6. Journaliser séparément les erreurs de canal et les succès.
+
+### Endpoints backend appelés
+
+```http
+GET /internal/n8n/notifications/candidates?limit=100&mark_as_sent=false
+X-N8N-Secret: <secret partagé>
+```
+
+```http
+POST /internal/n8n/notifications/mark-sent
+X-N8N-Secret: <secret partagé>
+Content-Type: application/json
+```
+
+```http
+POST <LIFEPILOT_NOTIFICATION_CHANNEL_URL>
+Authorization: <optionnel>
+Content-Type: application/json
+```
+
+### Credentials nécessaires
+
+- `LIFEPILOT_N8N_SECRET` pour récupérer et marquer les notifications.
+- Credential ou token du canal de notification : email, Telegram, WhatsApp, webhook ou service interne.
+- `LIFEPILOT_NOTIFICATION_CHANNEL_AUTH` si le canal exige un header `Authorization`.
+
+### Erreurs possibles
+
+- Backend indisponible ou secret invalide.
+- Payload sans `id` ni `reminder_id`, impossible à marquer comme envoyé.
+- Canal externe indisponible, timeout, limite de débit ou rejet applicatif.
+- Notification trop volumineuse pour le canal.
+- Échec partiel sur un groupe de priorité.
+
+### Stratégie de retry
+
+- Ne jamais appeler `mark-sent` avant confirmation du canal.
+- Réessayer les erreurs réseau et `5xx` du canal avec backoff ; conserver les notifications non marquées pour le prochain run.
+- Segmenter les grands lots par priorité et taille maximale du canal.
+- Pour les erreurs permanentes de payload, créer une alerte opérateur plutôt que boucler indéfiniment.
+
+### Règles de sécurité
+
+- Minimiser le contenu envoyé au canal : titre, description courte, priorité et identifiant interne si nécessaire.
+- Ne pas inclure de PDF, données bancaires détaillées, données fiscales complètes ou secrets dans le message.
+- Utiliser TLS et authentification pour les webhooks externes.
+- Conserver une traçabilité backend de l'envoi avec canal, horodatage et identifiants, sans exposer le secret n8n.
