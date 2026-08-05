@@ -47,6 +47,18 @@ class TaxYearFileUpdate(BaseModel):
         return self
 
 
+class TaxChecklistExport(BaseModel):
+    """Export textuel de la checklist fiscale.
+
+    Le champ ``pdf_export_available`` réserve explicitement l'extension PDF future.
+    """
+
+    format: str
+    content: str
+    filename: str
+    pdf_export_available: bool = False
+
+
 class TaxYearFileResponse(BaseModel):
     """Représentation publique d'un dossier fiscal annuel."""
 

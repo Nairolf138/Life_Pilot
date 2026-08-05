@@ -6,6 +6,7 @@ const navigation = [
   { href: "/accounts", label: "Comptes" },
   { href: "/transactions", label: "Transactions" },
   { href: "/documents", label: "Documents" },
+  { href: "/tax", label: "Impôts" },
   { href: "/reminders", label: "Rappels" },
   { href: "/settings", label: "Paramètres" },
 ];
