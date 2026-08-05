@@ -106,6 +106,10 @@ class Settings(BaseSettings):
         validation_alias="NOTIFICATION_N8N_WEBHOOK_URL",
     )
 
+    qdrant_url: str | None = Field(default=None, validation_alias="QDRANT_URL")
+    llm_provider: str = Field(default="none", validation_alias="LLM_PROVIDER")
+    llm_api_key: str | None = Field(default=None, validation_alias="LLM_API_KEY")
+
 
 @lru_cache
 def get_settings() -> Settings:
