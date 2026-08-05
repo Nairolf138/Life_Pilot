@@ -16,6 +16,7 @@ from app.api.routes import (
     internal,
     reminders,
     settings,
+    tax,
     transactions,
     vehicles,
 )
@@ -33,4 +34,5 @@ api_router.include_router(vehicles.router)
 api_router.include_router(assets.router)
 api_router.include_router(reminders.router)
 api_router.include_router(settings.router)
+api_router.include_router(tax.router)
 api_router.include_router(assistant.router)
