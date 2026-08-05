@@ -7,9 +7,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from app.schemas.asset import AssetCurrencySummary, AssetResponse, AssetSyncResponse
+from app.schemas.asset import AssetResponse, AssetSyncResponse, NetWorthSummaryResponse
 from app.services.asset_service import AssetService, get_asset_service
 from app.services.auth_service import AuthenticatedUser, get_current_user
+from app.services.net_worth_service import NetWorthService, get_net_worth_service
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -24,14 +25,14 @@ async def list_assets(
     return await asset_service.list_assets(current_user.id)
 
 
-@router.get("/summary", response_model=list[AssetCurrencySummary])
+@router.get("/summary", response_model=NetWorthSummaryResponse)
 async def get_assets_summary(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
-    asset_service: Annotated[AssetService, Depends(get_asset_service)],
-) -> list[AssetCurrencySummary]:
+    net_worth_service: Annotated[NetWorthService, Depends(get_net_worth_service)],
+) -> NetWorthSummaryResponse:
     """Retourne une synthèse du patrimoine de l'utilisateur authentifié."""
 
-    return await asset_service.get_summary(current_user.id)
+    return await net_worth_service.get_summary(current_user.id)
 
 
 @router.post("/sync", response_model=AssetSyncResponse)

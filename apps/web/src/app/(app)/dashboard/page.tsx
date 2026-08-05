@@ -2,6 +2,7 @@ import { ActionButton, Alert, DataTable, EmptyState, StatCard, StatusBadge } fro
 import { apiClient } from "@/lib/api-client";
 
 const DASHBOARD_MONTHLY_SUMMARY_ENDPOINT = "/api/dashboard/monthly-summary";
+const ASSETS_SUMMARY_ENDPOINT = "/api/assets/summary";
 
 type MonthlyCategorySummary = Readonly<{
   category_id: string | null;
@@ -18,6 +19,24 @@ type MonthlyTransactionAttention = Readonly<{
   category_name: string | null;
   confidence_score: string | null;
   linked_document_id: string | null;
+}>;
+
+type AssetAllocation = Readonly<{
+  asset_class: string;
+  label: string;
+  value: string | number;
+  percentage: string | number;
+}>;
+
+type AssetsSummary = Readonly<{
+  currency: string;
+  bank_cash_total: string | number;
+  crypto_total: string | number;
+  stocks_total: string | number;
+  other_assets_total: string | number;
+  estimated_net_worth: string | number;
+  allocation: AssetAllocation[];
+  last_sync_at: string | null;
 }>;
 
 type MonthlySummary = Readonly<{
@@ -58,6 +77,26 @@ const emptyMonthlySummary = (month: string): MonthlySummary => ({
   transactions_without_document_amount: "0",
 });
 
+const emptyAssetsSummary = (): AssetsSummary => ({
+  currency: "EUR",
+  bank_cash_total: "0",
+  crypto_total: "0",
+  stocks_total: "0",
+  other_assets_total: "0",
+  estimated_net_worth: "0",
+  allocation: [],
+  last_sync_at: null,
+});
+
+async function getAssetsSummary(): Promise<{ data: AssetsSummary; isFallback: boolean }> {
+  try {
+    const data = await apiClient<AssetsSummary>("/assets/summary", { cache: "no-store" });
+    return { data, isFallback: false };
+  } catch {
+    return { data: emptyAssetsSummary(), isFallback: true };
+  }
+}
+
 async function getMonthlySummary(month: string): Promise<{ data: MonthlySummary; isFallback: boolean }> {
   try {
     const data = await apiClient<MonthlySummary>(`/dashboard/monthly-summary?month=${month}`, {
@@ -69,12 +108,12 @@ async function getMonthlySummary(month: string): Promise<{ data: MonthlySummary;
   }
 }
 
-function toNumber(value: string) {
+function toNumber(value: string | number) {
   return Number(value) || 0;
 }
 
-function formatCurrency(value: string | number) {
-  return new Intl.NumberFormat("fr-FR", { currency: "EUR", style: "currency" }).format(
+function formatCurrency(value: string | number, currency = "EUR") {
+  return new Intl.NumberFormat("fr-FR", { currency, style: "currency" }).format(
     typeof value === "number" ? value : toNumber(value),
   );
 }
@@ -93,7 +132,10 @@ function attentionRows(transactions: MonthlyTransactionAttention[]) {
 }
 
 export default async function DashboardPage() {
-  const { data: summary, isFallback } = await getMonthlySummary(currentMonth());
+  const [{ data: summary, isFallback }, { data: assetsSummary, isFallback: assetsFallback }] = await Promise.all([
+    getMonthlySummary(currentMonth()),
+    getAssetsSummary(),
+  ]);
 
   const transactionsToReview = new Set([
     ...summary.uncategorized_transactions.map((transaction) => transaction.id),
@@ -113,6 +155,12 @@ export default async function DashboardPage() {
     ["Documents financiers non rapprochés", "Documents", <StatusBadge key="financial-documents" variant="warning">{summary.financial_unmatched_documents_count}</StatusBadge>],
     ["Transactions à vérifier", "Priorités", <StatusBadge key="transactions" variant="info">{transactionsToReview}</StatusBadge>],
   ];
+
+  const allocationRows = assetsSummary.allocation.map((item) => [
+    item.label,
+    formatCurrency(item.value, assetsSummary.currency),
+    `${toNumber(item.percentage).toFixed(2)} %`,
+  ]);
 
   const categoryRows = summary.expenses_by_category.map((category) => [
     category.category_name,
@@ -157,6 +205,17 @@ export default async function DashboardPage() {
           trend={<a href="/documents?filter=financial-unmatched">Voir les documents à rapprocher</a>}
           icon="!"
         />
+        <StatCard label="Patrimoine estimé" value={formatCurrency(assetsSummary.estimated_net_worth, assetsSummary.currency)} trend="Comptes bancaires et actifs suivis" icon="Σ" />
+        <StatCard label="Cash bancaire" value={formatCurrency(assetsSummary.bank_cash_total, assetsSummary.currency)} trend="Soldes des comptes actifs" icon="€" />
+        <StatCard label="Crypto" value={formatCurrency(assetsSummary.crypto_total, assetsSummary.currency)} trend="Valorisation crypto synchronisée" icon="₿" />
+        <StatCard label="Actions" value={formatCurrency(assetsSummary.stocks_total, assetsSummary.currency)} trend="Titres de type action" icon="↗" />
+        <StatCard label="Autres actifs" value={formatCurrency(assetsSummary.other_assets_total, assetsSummary.currency)} trend="Actifs patrimoniaux hors classes principales" icon="◇" />
+        <StatCard
+          label="Dernière synchronisation"
+          value={assetsSummary.last_sync_at ? formatDate(assetsSummary.last_sync_at) : "Jamais"}
+          trend="Comptes ou prix d'actifs"
+          icon="⟳"
+        />
       </div>
 
       {isFallback ? (
@@ -165,7 +224,26 @@ export default async function DashboardPage() {
         </Alert>
       ) : null}
 
+      {assetsFallback ? (
+        <Alert title="Patrimoine indisponible" variant="warning">
+          La route {ASSETS_SUMMARY_ENDPOINT} n'a pas pu être appelée depuis le frontend. Connectez-vous ou vérifiez l'API pour afficher les cartes patrimoniales réelles.
+        </Alert>
+      ) : null}
+
       <div className="dashboard-panels">
+        <div className="page-card">
+          <h3>Répartition patrimoniale</h3>
+          {allocationRows.length > 0 ? (
+            <DataTable
+              caption="Répartition par classe d'actif"
+              columns={["Classe", "Montant", "Poids"]}
+              rows={allocationRows}
+            />
+          ) : (
+            <p className="muted-text">Aucun actif synchronisé pour le moment.</p>
+          )}
+        </div>
+
         <div className="page-card">
           <h3>Points d'attention</h3>
           <DataTable
