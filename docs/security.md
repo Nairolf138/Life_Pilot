@@ -161,3 +161,24 @@ sensibles. Côté API, les règles suivantes sont obligatoires :
   directement depuis Internet.
 - Les ports inutiles doivent rester fermés et les règles réseau doivent être
   documentées.
+
+## Plan de sauvegarde et restauration
+
+- **Base PostgreSQL — quotidien** : exécuter chaque jour `scripts/backup.sh`
+  depuis la racine du dépôt afin de produire un dump PostgreSQL horodaté et
+  compressé. En production, utiliser `scripts/backup.sh --encrypt` avec la
+  variable `BACKUP_ENCRYPTION_PASSPHRASE` fournie par un coffre de secrets, puis
+  copier l'archive et son fichier `.sha256` vers un stockage privé hors serveur.
+- **Documents — quotidien** : inclure chaque jour les documents MinIO ou le
+  volume fichiers dans la même sauvegarde. Vérifier que `MINIO_BUCKET` pointe
+  vers le bucket documentaire attendu et que le stockage de destination n'est ni
+  public ni versionné dans Git.
+- **Configuration n8n — hebdomadaire** : conserver au moins un export n8n par
+  semaine. Le script tente d'exporter workflows et credentials chiffrés via le
+  CLI n8n ; si l'export n'est pas possible, journaliser l'échec et planifier un
+  export manuel avant toute modification majeure des automatisations.
+- **Test de restauration — mensuel** : restaurer mensuellement la dernière
+  sauvegarde sur un environnement isolé avec `scripts/restore.sh`, valider les
+  contrôles minimaux post-restauration, puis vérifier manuellement un parcours
+  métier incluant l'accès à la base, la présence de documents et un workflow n8n
+  représentatif.
