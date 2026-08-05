@@ -6,6 +6,12 @@
 - Le vrai fichier `.env` contient des secrets et des valeurs propres à chaque environnement : il ne doit jamais être versionné, commité ou poussé dans le dépôt Git.
 - Les secrets partagés entre environnements doivent être transmis via un gestionnaire de secrets ou un canal sécurisé, jamais par commit.
 
+## Clés API des connecteurs d’actifs
+
+- Les clés API utilisées par les connecteurs d’actifs (Binance, eToro ou fournisseurs équivalents) doivent être configurées en lecture seule côté fournisseur.
+- Les permissions d’achat, vente, virement, retrait, dépôt, effet de levier ou trading doivent rester désactivées pour toutes les clés utilisées par Life Pilot.
+- Les credentials doivent être fournis uniquement par variables d’environnement ou par un coffre de secrets compatible ; ils ne doivent jamais être stockés en clair dans le code, la base de données ou les fichiers versionnés.
+
 ## Authentification
 
 - Les mots de passe sont stockés uniquement sous forme de hash robuste et jamais en clair.
