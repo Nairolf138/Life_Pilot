@@ -58,3 +58,27 @@ class AssetSyncResponse(BaseModel):
     synced_at: datetime
     updated_count: int = Field(ge=0)
     assets: list[AssetResponse]
+
+
+class AssetClassAllocationResponse(BaseModel):
+    """Répartition d'une classe d'actifs dans le patrimoine estimé."""
+
+    asset_class: str
+    label: str
+    value: Decimal
+    percentage: Decimal
+
+
+class NetWorthSummaryResponse(BaseModel):
+    """Synthèse globale du patrimoine estimé."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    currency: str
+    bank_cash_total: Decimal
+    crypto_total: Decimal
+    stocks_total: Decimal
+    other_assets_total: Decimal
+    estimated_net_worth: Decimal
+    allocation: list[AssetClassAllocationResponse]
+    last_sync_at: datetime | None
