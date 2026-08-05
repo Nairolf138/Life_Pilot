@@ -33,7 +33,6 @@ class TransactionResponse(BaseModel):
     is_internal_transfer: bool
     linked_document_id: UUID | None
     notes: str | None
-    raw_data_json: dict
     created_at: datetime
     updated_at: datetime
 

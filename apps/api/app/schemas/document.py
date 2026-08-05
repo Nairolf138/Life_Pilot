@@ -23,10 +23,7 @@ class DocumentResponse(BaseModel):
     due_date: date | None
     amount: Decimal | None
     currency: str
-    file_path: str
-    file_hash: str
     mime_type: str | None
-    extracted_text: str | None
     extraction_status: str | None
     confidence_score: Decimal | None
     linked_transaction_id: UUID | None

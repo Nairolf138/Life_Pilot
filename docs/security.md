@@ -182,3 +182,33 @@ sensibles. Côté API, les règles suivantes sont obligatoires :
   contrôles minimaux post-restauration, puis vérifier manuellement un parcours
   métier incluant l'accès à la base, la présence de documents et un workflow n8n
   représentatif.
+
+## Contrôles qualité de sécurité automatisés
+
+Les contrôles suivants doivent être maintenus dans `apps/api/tests/security/` et
+exécutés avec la suite de tests API avant merge :
+
+- **Routes privées authentifiées** : vérifier que les routes privées déclarent la
+  dépendance `get_current_user`, ce qui empêche l'accès non authentifié aux
+  comptes, transactions, documents, contrats, tableau de bord, véhicules,
+  actifs, rappels, paramètres, dossiers fiscaux et profil courant.
+- **Réponses API sans secrets** : contrôler que les schémas de réponse publics
+  n'exposent pas de champs de secrets, tokens, mots de passe, cookies,
+  autorisations, payloads bruts, chemins de stockage, hash de fichiers ou textes
+  OCR complets.
+- **Documents protégés** : vérifier spécifiquement que le détail et le
+  téléchargement des documents dépendent de l'utilisateur authentifié avant tout
+  accès au service documentaire.
+- **Isolation multi-utilisateur** : contrôler statiquement que les requêtes
+  documentaires filtrent l'accès par `user_id` en plus de l'identifiant de
+  ressource, afin qu'un utilisateur A ne puisse pas lire les données d'un
+  utilisateur B.
+- **Logs de test redacted** : injecter des tokens et secrets connus dans le
+  logger de test et vérifier que la sortie formatée ne contient jamais les
+  valeurs originales.
+- **`.env` réel non versionné** : vérifier via Git que `.env` et `apps/api/.env`
+  ne sont pas suivis par le dépôt ; seul un modèle documenté comme
+  `.env.example` peut être versionné.
+- **Connecteurs financiers en lecture seule** : vérifier que les connecteurs
+  d'actifs exposent uniquement les méthodes de consultation et de synchronisation
+  autorisées, sans méthode d'achat, vente, ordre, virement, dépôt ou retrait.
