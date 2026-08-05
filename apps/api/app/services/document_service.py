@@ -19,6 +19,10 @@ from app.schemas.document import (
     DocumentUpdate,
     DocumentUploadResponse,
 )
+from app.services.document_classification_service import (
+    DocumentClassificationInput,
+    DocumentClassificationService,
+)
 from app.services.document_extraction_service import DocumentExtractionService
 from app.services.storage_service import (
     DownloadedFile,
@@ -160,9 +164,9 @@ class DocumentService:
             },
         )
         await self._session.commit()
-        return DocumentUploadResponse(
-            document=_document_from_row(result.mappings().one()), duplicate=False
-        )
+        document = _document_from_row(result.mappings().one())
+        document = await self._classify_tax_document(user_id, document)
+        return DocumentUploadResponse(document=document, duplicate=False)
 
     async def download_document(
         self,
@@ -190,7 +194,8 @@ class DocumentService:
 
         changes = payload.model_dump(exclude_unset=True)
         if changes:
-            return await self._update_document_fields(user_id, document_id, changes)
+            document = await self._update_document_fields(user_id, document_id, changes)
+            return await self._classify_tax_document(user_id, document)
 
         document = await self.get_document(user_id, document_id)
         downloaded_file = self._storage_service.download_document_file(
@@ -218,9 +223,10 @@ class DocumentService:
             extraction_changes["amount"] = extraction.amount
         if extraction.currency is not None:
             extraction_changes["currency"] = extraction.currency
-        return await self._update_document_fields(
+        document = await self._update_document_fields(
             user_id, document_id, extraction_changes
         )
+        return await self._classify_tax_document(user_id, document)
 
     async def link_transaction(
         self,
@@ -267,7 +273,30 @@ class DocumentService:
         changes = payload.model_dump(exclude_unset=True)
         if not changes:
             return await self.get_document(user_id, document_id)
-        return await self._update_document_fields(user_id, document_id, changes)
+        document = await self._update_document_fields(user_id, document_id, changes)
+        return await self._classify_tax_document(user_id, document)
+
+    async def _classify_tax_document(
+        self,
+        user_id: UUID,
+        document: DocumentRecord,
+    ) -> DocumentRecord:
+        classification = await DocumentClassificationService(
+            self._session
+        ).classify_and_link_document(
+            user_id=user_id,
+            document_id=document.id,
+            document=DocumentClassificationInput(
+                document_type=document.document_type,
+                tags=document.tags,
+                issuer=document.issuer,
+                issue_date=document.issue_date,
+            ),
+        )
+        if not classification.is_tax_relevant:
+            return document
+        await self._session.commit()
+        return await self.get_document(user_id, document.id)
 
     async def _update_document_fields(
         self,
