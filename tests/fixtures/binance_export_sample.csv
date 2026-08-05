@@ -1,0 +1,5 @@
+Date(UTC),Account,Operation,Coin,Change,Remark
+2026-07-11 09:15:00,Spot,Deposit,EUR,250.00,SEPA deposit fictif depuis Credit Mutuel
+2026-07-11 10:02:00,Spot,Buy,BTC,0.00230000,Achat fictif BTC avec EUR
+2026-07-11 10:02:00,Spot,Fee,BNB,-0.00012000,Frais fictifs
+2026-07-15 08:30:00,Spot,Earn Interest,USDT,1.42,Rendement fictif a analyser

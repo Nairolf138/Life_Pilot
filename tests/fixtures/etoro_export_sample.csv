@@ -1,0 +1,5 @@
+Date,Type,Instrument,Units,Amount,Currency,Notes
+2026-07-12,Withdrawal,EUR,,180.50,EUR,Virement fictif vers Credit Mutuel
+2026-07-03,Buy,ACME.US,4,-196.00,USD,Achat action fictive
+2026-07-20,Dividend,ACME.US,,2.35,USD,Dividende fictif a analyser
+2026-07-28,Fee,Conversion,, -1.10,EUR,Frais de conversion fictif
