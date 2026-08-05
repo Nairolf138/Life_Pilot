@@ -7,13 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import api_router
 from app.core.config import get_settings
+from app.core.logging import CorrelationIdMiddleware, configure_logging
 
 
 def create_app() -> FastAPI:
     """Construit l'application FastAPI et enregistre ses routeurs."""
 
     settings = get_settings()
+    configure_logging(settings.log_level, settings.environment)
     app = FastAPI(title=settings.app_name)
+    app.add_middleware(CorrelationIdMiddleware)
 
     if settings.cors_origins:
         app.add_middleware(

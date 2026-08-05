@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     app_name: str = "Life Pilot API"
     api_prefix: str = ""
     environment: str = Field(default="local", validation_alias="ENVIRONMENT")
+    log_level: str | None = Field(default=None, validation_alias="LOG_LEVEL")
     database_url: str = Field(
         default="postgresql+asyncpg://lifepilot:lifepilot@localhost:5432/lifepilot",
         validation_alias="DATABASE_URL",
