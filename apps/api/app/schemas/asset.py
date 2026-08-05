@@ -29,7 +29,6 @@ class AssetResponse(BaseModel):
     current_value: Decimal | None
     pnl_unrealized: Decimal | None
     last_price_sync_at: datetime | None
-    raw_data_json: dict
     created_at: datetime
     updated_at: datetime
 
